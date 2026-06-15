@@ -269,6 +269,8 @@ async function loadDocuments() {
           </div>
         </div>
         <div class="doc-card-actions">
+          ${canViewFile(d.file_type) ? `<a class="btn btn-primary btn-sm" href="/api/documents/${d.id}/file" target="_blank" rel="noopener">查看</a>` : ""}
+          <a class="btn btn-secondary btn-sm" href="/api/documents/${d.id}/file?download=1">下載</a>
           <button type="button" class="btn btn-outline btn-sm doc-delete-btn" data-id="${d.id}" data-filename="${escapeAttr(d.filename)}">刪除</button>
         </div>
       </article>
@@ -283,6 +285,10 @@ async function loadDocuments() {
     list.innerHTML = '<p class="empty-state">無法載入文件列表</p>';
     countEl.textContent = "0 份";
   }
+}
+
+function canViewFile(fileType) {
+  return fileType === "pdf" || fileType === "image";
 }
 
 async function deleteDocument(docId, filename) {

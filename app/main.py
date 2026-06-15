@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -14,6 +14,7 @@ from app.auth import get_current_user, init_oauth, login_with_google, oauth, oau
 from app.database import (
     delete_document,
     delete_event,
+    get_document_by_id,
     get_documents_for_user,
     get_events_for_user,
     init_db,
@@ -48,6 +49,32 @@ def user_upload_dir(user_id: int) -> Path:
     path = BASE_DIR / "uploads" / str(user_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+}
+
+
+def resolve_document_file(doc: dict, user_id: int) -> Path | None:
+    stored_path = doc.get("stored_path")
+    if stored_path:
+        path = BASE_DIR / stored_path
+        if path.is_file():
+            return path
+
+    upload_dir = user_upload_dir(user_id)
+    matches = sorted(upload_dir.glob(f"*_{doc['filename']}"), reverse=True)
+    for candidate in matches:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 @app.on_event("startup")
@@ -155,6 +182,33 @@ async def api_delete_event(event_id: int, user: dict = Depends(get_current_user)
     if not deleted:
         raise HTTPException(404, "找不到該活動")
     return {"ok": True}
+
+
+@app.get("/api/documents/{document_id}/file")
+async def api_document_file(
+    document_id: int,
+    download: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    doc = await get_document_by_id(document_id, user["id"])
+    if not doc:
+        raise HTTPException(404, "找不到該文件")
+
+    file_path = resolve_document_file(doc, user["id"])
+    if not file_path:
+        raise HTTPException(404, "找不到原始檔案，可能已於較早版本上傳")
+
+    ext = Path(doc["filename"]).suffix.lower()
+    media_type = CONTENT_TYPES.get(ext, "application/octet-stream")
+    viewable = ext in {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+    disposition = "attachment" if download or not viewable else "inline"
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=doc["filename"],
+        content_disposition_type=disposition,
+    )
 
 
 @app.delete("/api/documents/{document_id}")

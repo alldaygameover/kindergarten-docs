@@ -373,7 +373,25 @@ body {
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
 }
-.doc-card-actions { flex-shrink: 0; }
+.doc-card-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+.btn-secondary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  text-decoration: none;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-secondary:hover { background: #f0ede8; }
+.doc-card-actions .btn-primary { text-decoration: none; text-align: center; }
 
 .empty-state {
   color: var(--text-muted);
@@ -442,6 +460,13 @@ body {
   .main { padding: 0.75rem; gap: 0; }
   .tab-panel.active { margin-top: 0.75rem; }
   #calendar { min-height: 380px; }
+  .doc-card { flex-wrap: wrap; }
+  .doc-card-actions {
+    flex-direction: row;
+    width: 100%;
+    margin-top: 0.25rem;
+  }
+  .doc-card-actions .btn { flex: 1; }
 }
 
 @media (min-width: 769px) {
