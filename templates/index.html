@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>幼稚園文件月曆</title>
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">📅</span>
+        <div>
+          <h1>幼稚園文件月曆</h1>
+          <p class="subtitle">上傳通告、活動單、假期表 — AI 自動整理成月曆</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="status-badge" class="status-badge">檢查中...</div>
+        <div id="user-menu" class="user-menu hidden">
+          <img id="user-avatar" class="user-avatar" alt="">
+          <span id="user-name" class="user-name"></span>
+          <a href="/auth/logout" class="btn btn-ghost">登出</a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="login-screen" class="login-screen hidden">
+    <div class="login-card">
+      <div class="login-icon">📅</div>
+      <h2>幼稚園文件月曆</h2>
+      <p>用 Google 帳戶登入，管理你嘅幼稚園通告同活動</p>
+      <a href="/auth/login" class="btn btn-google">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        用 Google 帳戶登入
+      </a>
+      <p id="login-error" class="login-error hidden"></p>
+      <div id="oauth-setup-hint" class="oauth-setup-hint hidden">
+        <p><strong>Google 登入設定：</strong>請到 Google Cloud Console，喺 OAuth Client 加入以下 Redirect URI：</p>
+        <code id="redirect-uri-display"></code>
+      </div>
+    </div>
+  </div>
+
+  <main id="app-main" class="main hidden">
+    <section class="upload-section">
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-icon">📄</div>
+        <p class="drop-title">拖放文件到這裡，或點擊選擇</p>
+        <p class="drop-hint">支援 JPG、PNG、PDF、DOCX</p>
+        <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.docx" hidden>
+        <button type="button" id="select-btn" class="btn btn-primary">選擇文件</button>
+      </div>
+      <div id="upload-progress" class="upload-progress hidden">
+        <div class="spinner"></div>
+        <p>AI 正在分析文件，請稍候...</p>
+      </div>
+      <div id="upload-results" class="upload-results"></div>
+    </section>
+
+    <section class="calendar-section">
+      <div class="section-header">
+        <h2>活動月曆</h2>
+        <div class="legend">
+          <span class="legend-item" data-color="#e74c3c">假期</span>
+          <span class="legend-item" data-color="#3498db">活動</span>
+          <span class="legend-item" data-color="#f39c12">繳費</span>
+          <span class="legend-item" data-color="#9b59b6">校服</span>
+          <span class="legend-item" data-color="#1abc9c">會議</span>
+          <span class="legend-item" data-color="#27ae60">外出</span>
+        </div>
+      </div>
+      <div id="calendar"></div>
+    </section>
+
+    <section class="docs-section">
+      <h2>已上傳文件</h2>
+      <div id="docs-list" class="docs-list">
+        <p class="empty-state">尚未上傳任何文件</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="event-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <button class="modal-close" aria-label="關閉">&times;</button>
+      <h3 id="modal-title"></h3>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="modal-delete" class="btn btn-danger">刪除此活動</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

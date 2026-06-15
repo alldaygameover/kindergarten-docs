@@ -1,0 +1,237 @@
+import os
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+
+from app.ai_analyzer import analyze_document
+from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured
+from app.database import (
+    delete_event,
+    get_documents_for_user,
+    get_events_for_user,
+    init_db,
+    save_document,
+    save_events,
+)
+from app.extractors import extract_content, get_file_type
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).parent.parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+app = FastAPI(title="幼稚園文件月曆")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", secrets.token_hex(32)),
+    same_site="lax",
+    https_only=os.getenv("APP_URL", "").startswith("https://"),
+)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+init_oauth()
+
+
+def get_redirect_uri(request: Request) -> str:
+    return os.getenv("APP_URL", str(request.base_url).rstrip("/")) + "/auth/callback"
+
+
+def user_upload_dir(user_id: int) -> Path:
+    path = BASE_DIR / "uploads" / str(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return {"authenticated": False}
+    from app.database import get_user_by_id
+
+    user = await get_user_by_id(user_id)
+    if not user:
+        request.session.clear()
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "id": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+        "picture": user["picture"],
+    }
+
+
+@app.get("/auth/login")
+async def auth_login(request: Request):
+    if not oauth_configured():
+        raise HTTPException(
+            503,
+            "請設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET。"
+            "到 Google Cloud Console 建立 OAuth 憑證。",
+        )
+    redirect_uri = get_redirect_uri(request)
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        await login_with_google(request, token)
+    except Exception as exc:
+        raise HTTPException(400, f"Google 登入失敗: {exc}") from exc
+    return RedirectResponse("/")
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/")
+
+
+@app.get("/api/events")
+async def api_events(user: dict = Depends(get_current_user)):
+    events = await get_events_for_user(user["id"])
+    calendar_events = []
+    for e in events:
+        color = {
+            "holiday": "#e74c3c",
+            "activity": "#3498db",
+            "payment": "#f39c12",
+            "uniform": "#9b59b6",
+            "meeting": "#1abc9c",
+            "excursion": "#27ae60",
+            "other": "#95a5a6",
+        }.get(e.get("category"), "#95a5a6")
+
+        end = e.get("end_date") or e["event_date"]
+        calendar_events.append({
+            "id": e["id"],
+            "title": e["title"],
+            "start": e["event_date"],
+            "end": end,
+            "allDay": not e.get("event_time"),
+            "backgroundColor": color,
+            "borderColor": color,
+            "extendedProps": {
+                "description": e.get("description"),
+                "time": e.get("event_time"),
+                "location": e.get("location"),
+                "category": e.get("category"),
+                "notes": e.get("notes"),
+                "filename": e.get("filename"),
+            },
+        })
+    return calendar_events
+
+
+@app.get("/api/documents")
+async def api_documents(user: dict = Depends(get_current_user)):
+    return await get_documents_for_user(user["id"])
+
+
+@app.delete("/api/events/{event_id}")
+async def api_delete_event(event_id: int, user: dict = Depends(get_current_user)):
+    deleted = await delete_event(event_id, user["id"])
+    if not deleted:
+        raise HTTPException(404, "找不到該活動")
+    return {"ok": True}
+
+
+@app.post("/api/upload")
+async def api_upload(
+    files: list[UploadFile] = File(...),
+    user: dict = Depends(get_current_user),
+):
+    if not os.getenv("OPENROUTER_API_KEY"):
+        raise HTTPException(
+            400,
+            "請先設定 OPENROUTER_API_KEY。到 https://openrouter.ai 免費申請 API key，"
+            "然後在 .env 檔案填入。",
+        )
+
+    results = []
+    now = datetime.now(timezone.utc).isoformat()
+    upload_dir = user_upload_dir(user["id"])
+
+    for file in files:
+        if not file.filename:
+            continue
+
+        file_type = get_file_type(file.filename)
+        if file_type == "unknown":
+            results.append({
+                "filename": file.filename,
+                "success": False,
+                "error": "不支援的檔案格式",
+            })
+            continue
+
+        try:
+            data = await file.read()
+            safe_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+            (upload_dir / safe_name).write_bytes(data)
+
+            content = extract_content(file.filename, data)
+            analysis = await analyze_document(content)
+
+            doc_id = await save_document(
+                user_id=user["id"],
+                filename=file.filename,
+                file_type=file_type,
+                uploaded_at=now,
+                raw_text=content.get("text", ""),
+                summary=analysis.get("summary", ""),
+            )
+
+            events = analysis.get("events", [])
+            valid_events = [e for e in events if e.get("event_date")]
+            saved = await save_events(doc_id, valid_events, now)
+
+            results.append({
+                "filename": file.filename,
+                "success": True,
+                "summary": analysis.get("summary", ""),
+                "events_found": len(valid_events),
+                "events_saved": saved,
+            })
+        except Exception as exc:
+            results.append({
+                "filename": file.filename,
+                "success": False,
+                "error": str(exc),
+            })
+
+    return {"results": results}
+
+
+@app.get("/api/health")
+async def health(request: Request):
+    return {
+        "status": "ok",
+        "api_key_set": bool(os.getenv("OPENROUTER_API_KEY")),
+        "google_oauth_set": oauth_configured(),
+        "vision_models": os.getenv(
+            "OPENROUTER_VISION_MODELS",
+            "nvidia/nemotron-nano-12b-v2-vl:free,nex-agi/nex-n2-pro:free",
+        ).split(",")[0],
+        "redirect_uri": get_redirect_uri(request),
+    }
