@@ -128,28 +128,43 @@ const LocalStore = (() => {
     return getAll(tx.objectStore("events"), "userId", userId);
   }
 
+  function addDays(dateStr, days) {
+    const d = new Date(`${dateStr}T12:00:00`);
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
   function eventsToCalendar(events) {
-    return events.map((e) => {
-      const color = EVENT_COLORS[e.category] || EVENT_COLORS.other;
-      const end = e.endDate || e.eventDate;
-      return {
-        id: String(e.id),
-        title: e.title,
-        start: e.eventDate,
-        end,
-        allDay: !e.eventTime,
-        backgroundColor: color,
-        borderColor: color,
-        extendedProps: {
-          description: e.description,
-          time: e.eventTime,
-          location: e.location,
-          category: e.category,
-          notes: e.notes,
-          filename: e.filename,
-        },
-      };
-    });
+    return events
+      .filter((e) => e.eventDate && e.eventDate !== "null")
+      .map((e) => {
+        const color = EVENT_COLORS[e.category] || EVENT_COLORS.other;
+        const hasTime = e.eventTime && e.eventTime !== "null";
+        const start = e.eventDate;
+        let end = e.endDate && e.endDate !== "null" ? e.endDate : e.eventDate;
+
+        if (!hasTime) {
+          end = addDays(end, 1);
+        }
+
+        return {
+          id: String(e.id),
+          title: e.title,
+          start,
+          end,
+          allDay: !hasTime,
+          backgroundColor: color,
+          borderColor: color,
+          extendedProps: {
+            description: e.description,
+            time: e.eventTime,
+            location: e.location,
+            category: e.category,
+            notes: e.notes,
+            filename: e.filename,
+          },
+        };
+      });
   }
 
   async function deleteDocument(userId, docId) {

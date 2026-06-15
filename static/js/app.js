@@ -145,11 +145,11 @@ function initCalendar() {
   const mobile = isMobile();
 
   calendar = new FullCalendar.Calendar(el, {
-    initialView: mobile ? "listMonth" : "dayGridMonth",
+    initialView: mobile ? "listYear" : "dayGridMonth",
     locale: "zh-tw",
     headerToolbar: mobile
       ? { left: "prev,next", center: "title", right: "today" }
-      : { left: "prev,next today", center: "title", right: "dayGridMonth,listMonth" },
+      : { left: "prev,next today", center: "title", right: "dayGridMonth,listYear" },
     height: "auto",
     events: async (info, success, failure) => {
       try {
@@ -252,6 +252,16 @@ async function uploadFilesLocal(files, results) {
 
       const { eventCount } = await LocalStore.saveDocumentWithEvents(currentUser.id, file, data);
       results.innerHTML += `<div class="result-item success">✓ ${escapeHtml(file.name)} — 找到 ${eventCount} 個活動，已儲存至此手機。${escapeHtml(data.summary || "")}</div>`;
+
+      if (eventCount > 0 && data.events?.length) {
+        const firstDate = data.events
+          .map((e) => e.event_date)
+          .filter(Boolean)
+          .sort()[0];
+        if (firstDate && calendar) {
+          calendar.gotoDate(firstDate);
+        }
+      }
     } catch (err) {
       results.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(err.message)}</div>`;
     }

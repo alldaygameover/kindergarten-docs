@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -150,13 +150,18 @@ async def api_events(user: dict = Depends(get_current_user)):
             "other": "#95a5a6",
         }.get(e.get("category"), "#95a5a6")
 
-        end = e.get("end_date") or e["event_date"]
+        has_time = bool(e.get("event_time"))
+        start = e["event_date"]
+        end = e.get("end_date") or start
+        if not has_time:
+            end_d = date.fromisoformat(end) + timedelta(days=1)
+            end = end_d.isoformat()
         calendar_events.append({
             "id": e["id"],
             "title": e["title"],
-            "start": e["event_date"],
+            "start": start,
             "end": end,
-            "allDay": not e.get("event_time"),
+            "allDay": not has_time,
             "backgroundColor": color,
             "borderColor": color,
             "extendedProps": {
