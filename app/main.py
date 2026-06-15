@@ -12,6 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.ai_analyzer import analyze_document
 from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured
 from app.database import (
+    delete_document,
     delete_event,
     get_documents_for_user,
     get_events_for_user,
@@ -156,6 +157,25 @@ async def api_delete_event(event_id: int, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 
+@app.delete("/api/documents/{document_id}")
+async def api_delete_document(document_id: int, user: dict = Depends(get_current_user)):
+    doc = await delete_document(document_id, user["id"])
+    if not doc:
+        raise HTTPException(404, "找不到該文件")
+
+    upload_dir = user_upload_dir(user["id"])
+    stored_path = doc.get("stored_path")
+    if stored_path:
+        file_path = BASE_DIR / stored_path
+        if file_path.is_file():
+            file_path.unlink()
+    else:
+        for candidate in upload_dir.glob(f"*_{doc['filename']}"):
+            candidate.unlink(missing_ok=True)
+
+    return {"ok": True}
+
+
 @app.post("/api/upload")
 async def api_upload(
     files: list[UploadFile] = File(...),
@@ -188,6 +208,7 @@ async def api_upload(
         try:
             data = await file.read()
             safe_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+            stored_path = Path("uploads") / str(user["id"]) / safe_name
             (upload_dir / safe_name).write_bytes(data)
 
             content = extract_content(file.filename, data)
@@ -200,6 +221,7 @@ async def api_upload(
                 uploaded_at=now,
                 raw_text=content.get("text", ""),
                 summary=analysis.get("summary", ""),
+                stored_path=str(stored_path).replace("\\", "/"),
             )
 
             events = analysis.get("events", [])

@@ -2,7 +2,8 @@
 <html lang="zh-HK">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#4a7c59">
   <title>幼稚園文件月曆</title>
   <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/style.css">
@@ -46,7 +47,13 @@
   </div>
 
   <main id="app-main" class="main hidden">
-    <section class="upload-section">
+    <nav class="mobile-tabs" aria-label="主要功能">
+      <button type="button" class="tab-btn active" data-tab="upload">上傳</button>
+      <button type="button" class="tab-btn" data-tab="calendar">月曆</button>
+      <button type="button" class="tab-btn" data-tab="docs">文件</button>
+    </nav>
+
+    <section class="upload-section tab-panel active" data-panel="upload">
       <div id="drop-zone" class="drop-zone">
         <div class="drop-icon">📄</div>
         <p class="drop-title">拖放文件到這裡，或點擊選擇</p>
@@ -61,23 +68,27 @@
       <div id="upload-results" class="upload-results"></div>
     </section>
 
-    <section class="calendar-section">
+    <section class="calendar-section tab-panel" data-panel="calendar">
       <div class="section-header">
         <h2>活動月曆</h2>
-        <div class="legend">
-          <span class="legend-item" data-color="#e74c3c">假期</span>
-          <span class="legend-item" data-color="#3498db">活動</span>
-          <span class="legend-item" data-color="#f39c12">繳費</span>
-          <span class="legend-item" data-color="#9b59b6">校服</span>
-          <span class="legend-item" data-color="#1abc9c">會議</span>
-          <span class="legend-item" data-color="#27ae60">外出</span>
-        </div>
+        <button type="button" id="legend-toggle" class="legend-toggle" aria-expanded="false">圖例</button>
+      </div>
+      <div id="legend" class="legend collapsed">
+        <span class="legend-item" data-color="#e74c3c">假期</span>
+        <span class="legend-item" data-color="#3498db">活動</span>
+        <span class="legend-item" data-color="#f39c12">繳費</span>
+        <span class="legend-item" data-color="#9b59b6">校服</span>
+        <span class="legend-item" data-color="#1abc9c">會議</span>
+        <span class="legend-item" data-color="#27ae60">外出</span>
       </div>
       <div id="calendar"></div>
     </section>
 
-    <section class="docs-section">
-      <h2>已上傳文件</h2>
+    <section class="docs-section tab-panel" data-panel="docs">
+      <div class="section-header">
+        <h2>已上傳文件</h2>
+        <span id="docs-count" class="docs-count">0 份</span>
+      </div>
       <div id="docs-list" class="docs-list">
         <p class="empty-state">尚未上傳任何文件</p>
       </div>

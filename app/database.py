@@ -60,6 +60,7 @@ async def init_db() -> None:
             """
         )
         await _ensure_column(db, "documents", "user_id", "INTEGER REFERENCES users(id)")
+        await _ensure_column(db, "documents", "stored_path", "TEXT")
         await db.commit()
 
 
@@ -110,14 +111,17 @@ async def save_document(
     uploaded_at: str,
     raw_text: str,
     summary: str,
+    stored_path: str = "",
 ) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
-            INSERT INTO documents (user_id, filename, file_type, uploaded_at, raw_text, summary)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (
+                user_id, filename, file_type, uploaded_at, raw_text, summary, stored_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, filename, file_type, uploaded_at, raw_text, summary),
+            (user_id, filename, file_type, uploaded_at, raw_text, summary, stored_path),
         )
         await db.commit()
         return cursor.lastrowid
@@ -174,11 +178,50 @@ async def get_documents_for_user(user_id: int) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM documents WHERE user_id = ? ORDER BY uploaded_at DESC",
+            """
+            SELECT d.*, COUNT(e.id) AS event_count
+            FROM documents d
+            LEFT JOIN events e ON e.document_id = d.id
+            WHERE d.user_id = ?
+            GROUP BY d.id
+            ORDER BY d.uploaded_at DESC
+            """,
             (user_id,),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def get_document_by_id(document_id: int, user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM documents WHERE id = ? AND user_id = ?",
+            (document_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_document(document_id: int, user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM documents WHERE id = ? AND user_id = ?",
+            (document_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        doc = dict(row)
+        await db.execute("DELETE FROM events WHERE document_id = ?", (document_id,))
+        await db.execute(
+            "DELETE FROM documents WHERE id = ? AND user_id = ?",
+            (document_id, user_id),
+        )
+        await db.commit()
+        return doc
 
 
 async def delete_event(event_id: int, user_id: int) -> bool:

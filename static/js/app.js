@@ -8,6 +8,12 @@ const CATEGORY_LABELS = {
   other: "其他",
 };
 
+const FILE_TYPE_ICONS = {
+  pdf: "📕",
+  doc: "📘",
+  image: "🖼️",
+};
+
 const FETCH_OPTS = { credentials: "include" };
 
 let calendar = null;
@@ -16,6 +22,8 @@ let currentUser = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
   initModal();
+  initTabs();
+  initLegendToggle();
   const user = await checkAuth();
   if (!user) return;
 
@@ -24,6 +32,49 @@ document.addEventListener("DOMContentLoaded", async () => {
   checkHealth();
   loadDocuments();
 });
+
+function isMobile() {
+  return window.matchMedia("(max-width: 768px)").matches;
+}
+
+function initTabs() {
+  const buttons = document.querySelectorAll(".tab-btn");
+  const panels = document.querySelectorAll(".tab-panel");
+
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.tab;
+      buttons.forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+      panels.forEach((p) => p.classList.toggle("active", p.dataset.panel === tab));
+      if (tab === "calendar" && calendar) {
+        calendar.updateSize();
+      }
+    });
+  });
+}
+
+function initLegendToggle() {
+  const toggle = document.getElementById("legend-toggle");
+  const legend = document.getElementById("legend");
+  if (!toggle || !legend) return;
+
+  toggle.addEventListener("click", () => {
+    const collapsed = legend.classList.toggle("collapsed");
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  });
+}
+
+function switchTab(tab) {
+  document.querySelectorAll(".tab-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === tab);
+  });
+  document.querySelectorAll(".tab-panel").forEach((p) => {
+    p.classList.toggle("active", p.dataset.panel === tab);
+  });
+  if (tab === "calendar" && calendar) {
+    calendar.updateSize();
+  }
+}
 
 async function checkAuth() {
   try {
@@ -76,14 +127,14 @@ function showApp(user) {
 
 function initCalendar() {
   const el = document.getElementById("calendar");
+  const mobile = isMobile();
+
   calendar = new FullCalendar.Calendar(el, {
-    initialView: "dayGridMonth",
+    initialView: mobile ? "listMonth" : "dayGridMonth",
     locale: "zh-tw",
-    headerToolbar: {
-      left: "prev,next today",
-      center: "title",
-      right: "dayGridMonth,listMonth",
-    },
+    headerToolbar: mobile
+      ? { left: "prev,next", center: "title", right: "today" }
+      : { left: "prev,next today", center: "title", right: "dayGridMonth,listMonth" },
     height: "auto",
     events: async (info, success, failure) => {
       try {
@@ -106,6 +157,10 @@ function initCalendar() {
     },
   });
   calendar.render();
+
+  window.addEventListener("resize", () => {
+    calendar.updateSize();
+  });
 }
 
 function initUpload() {
@@ -173,6 +228,9 @@ async function uploadFiles(files) {
 
     calendar.refetchEvents();
     loadDocuments();
+    if (isMobile()) {
+      switchTab("calendar");
+    }
   } catch (err) {
     results.innerHTML = `<div class="result-item error">上傳失敗: ${err.message}</div>`;
   } finally {
@@ -182,6 +240,8 @@ async function uploadFiles(files) {
 
 async function loadDocuments() {
   const list = document.getElementById("docs-list");
+  const countEl = document.getElementById("docs-count");
+
   try {
     const res = await fetch("/api/documents", FETCH_OPTS);
     if (res.status === 401) {
@@ -190,20 +250,62 @@ async function loadDocuments() {
     }
     const docs = await res.json();
 
+    countEl.textContent = `${docs.length} 份`;
+
     if (!docs.length) {
       list.innerHTML = '<p class="empty-state">尚未上傳任何文件</p>';
       return;
     }
 
     list.innerHTML = docs.map((d) => `
-      <div class="doc-card">
-        <h4>📎 ${escapeHtml(d.filename)}</h4>
-        <p>${escapeHtml(d.summary || "（無摘要）")}</p>
-        <p style="margin-top:0.25rem;font-size:0.8rem;">上傳時間: ${formatDate(d.uploaded_at)}</p>
-      </div>
+      <article class="doc-card" data-id="${d.id}">
+        <div class="doc-card-icon">${FILE_TYPE_ICONS[d.file_type] || "📎"}</div>
+        <div class="doc-card-body">
+          <div class="doc-card-title">${escapeHtml(d.filename)}</div>
+          <div class="doc-card-summary">${escapeHtml(d.summary || "（無摘要）")}</div>
+          <div class="doc-card-meta">
+            <span>${formatDate(d.uploaded_at)}</span>
+            <span>${d.event_count || 0} 個活動</span>
+          </div>
+        </div>
+        <div class="doc-card-actions">
+          <button type="button" class="btn btn-outline btn-sm doc-delete-btn" data-id="${d.id}" data-filename="${escapeAttr(d.filename)}">刪除</button>
+        </div>
+      </article>
     `).join("");
+
+    list.querySelectorAll(".doc-delete-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        deleteDocument(Number(btn.dataset.id), btn.dataset.filename);
+      });
+    });
   } catch {
     list.innerHTML = '<p class="empty-state">無法載入文件列表</p>';
+    countEl.textContent = "0 份";
+  }
+}
+
+async function deleteDocument(docId, filename) {
+  const msg = `確定要刪除「${filename}」？\n\n相關月曆活動也會一併刪除。`;
+  if (!confirm(msg)) return;
+
+  try {
+    const res = await fetch(`/api/documents/${docId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (res.status === 401) {
+      showLoginScreen();
+      return;
+    }
+    if (!res.ok) {
+      alert("刪除失敗");
+      return;
+    }
+    calendar.refetchEvents();
+    loadDocuments();
+  } catch {
+    alert("刪除失敗");
   }
 }
 
@@ -298,11 +400,24 @@ function formatEventDate(start, end) {
 }
 
 function formatDate(iso) {
-  return new Date(iso).toLocaleString("zh-HK");
+  return new Date(iso).toLocaleString("zh-HK", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+function escapeAttr(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
 }
