@@ -36,74 +36,67 @@ const LocalStore = (() => {
     return dbPromise;
   }
 
-  function tx(storeNames, mode = "readonly") {
-    return openDb().then((db) => {
-      const transaction = db.transaction(storeNames, mode);
-      return { transaction, stores: storeNames.map((n) => transaction.objectStore(n)) };
-    });
-  }
-
-  function reqToPromise(request) {
+  function getAll(store, indexName, value) {
     return new Promise((resolve, reject) => {
+      const request = indexName
+        ? store.index(indexName).getAll(value)
+        : store.getAll();
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
   }
 
-  function getAll(store, indexName, value) {
-    if (indexName) {
-      return reqToPromise(store.index(indexName).getAll(value));
-    }
-    return reqToPromise(store.getAll());
-  }
-
   async function saveDocumentWithEvents(userId, file, analysis) {
-    const { transaction, stores } = await tx(["documents", "events"], "readwrite");
-    const [docStore, eventStore] = stores;
+    const blob = await file.arrayBuffer();
+    const db = await openDb();
 
-    const docRecord = {
-      userId,
-      filename: file.name,
-      fileType: analysis.file_type,
-      summary: analysis.summary || "",
-      uploadedAt: new Date().toISOString(),
-      mimeType: file.type || "application/octet-stream",
-      blob: await file.arrayBuffer(),
-    };
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["documents", "events"], "readwrite");
+      const docStore = tx.objectStore("documents");
+      const eventStore = tx.objectStore("events");
 
-    const docId = await reqToPromise(docStore.add(docRecord));
-    let eventCount = 0;
-
-    for (const event of analysis.events || []) {
-      await reqToPromise(eventStore.add({
+      const docReq = docStore.add({
         userId,
-        documentId: docId,
-        title: event.title || "未命名活動",
-        description: event.description || null,
-        eventDate: event.event_date,
-        endDate: event.end_date || null,
-        eventTime: event.event_time || null,
-        location: event.location || null,
-        category: event.category || "other",
-        notes: event.notes || null,
         filename: file.name,
-      }));
-      eventCount += 1;
-    }
+        fileType: analysis.file_type,
+        summary: analysis.summary || "",
+        uploadedAt: new Date().toISOString(),
+        mimeType: file.type || "application/octet-stream",
+        blob,
+      });
 
-    await new Promise((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
+      docReq.onsuccess = () => {
+        const docId = docReq.result;
+        const events = analysis.events || [];
+        for (const event of events) {
+          eventStore.add({
+            userId,
+            documentId: docId,
+            title: event.title || "未命名活動",
+            description: event.description || null,
+            eventDate: event.event_date,
+            endDate: event.end_date || null,
+            eventTime: event.event_time || null,
+            location: event.location || null,
+            category: event.category || "other",
+            notes: event.notes || null,
+            filename: file.name,
+          });
+        }
+        tx._result = { docId, eventCount: events.length };
+      };
+
+      docReq.onerror = () => reject(docReq.error);
+      tx.oncomplete = () => resolve(tx._result);
+      tx.onerror = () => reject(tx.error);
     });
-
-    return { docId, eventCount };
   }
 
   async function getDocuments(userId) {
-    const { stores } = await tx(["documents"]);
-    const docs = await getAll(stores[0], "userId", userId);
-    const { stores: eventStores } = await tx(["events"]);
-    const events = await getAll(eventStores[0], "userId", userId);
+    const db = await openDb();
+    const tx = db.transaction(["documents", "events"], "readonly");
+    const docs = await getAll(tx.objectStore("documents"), "userId", userId);
+    const events = await getAll(tx.objectStore("events"), "userId", userId);
 
     return docs
       .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))
@@ -118,15 +111,21 @@ const LocalStore = (() => {
   }
 
   async function getDocument(userId, docId) {
-    const { stores } = await tx(["documents"]);
-    const doc = await reqToPromise(stores[0].get(docId));
-    if (!doc || doc.userId !== userId) return null;
-    return doc;
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction("documents", "readonly").objectStore("documents").get(docId);
+      req.onsuccess = () => {
+        const doc = req.result;
+        resolve(!doc || doc.userId !== userId ? null : doc);
+      };
+      req.onerror = () => reject(req.error);
+    });
   }
 
   async function getEvents(userId) {
-    const { stores } = await tx(["events"]);
-    return getAll(stores[0], "userId", userId);
+    const db = await openDb();
+    const tx = db.transaction("events", "readonly");
+    return getAll(tx.objectStore("events"), "userId", userId);
   }
 
   function eventsToCalendar(events) {
@@ -154,31 +153,66 @@ const LocalStore = (() => {
   }
 
   async function deleteDocument(userId, docId) {
-    const { transaction, stores } = await tx(["documents", "events"], "readwrite");
-    const [docStore, eventStore] = stores;
+    const db = await openDb();
 
-    const doc = await reqToPromise(docStore.get(docId));
-    if (!doc || doc.userId !== userId) return false;
-
-    const events = await getAll(eventStore, "documentId", docId);
-    for (const event of events) {
-      await reqToPromise(eventStore.delete(event.id));
-    }
-    await reqToPromise(docStore.delete(docId));
-
-    await new Promise((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
+    const events = await new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readonly");
+      const req = tx.objectStore("events").index("documentId").getAll(docId);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
-    return true;
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["documents", "events"], "readwrite");
+      const docStore = tx.objectStore("documents");
+      const eventStore = tx.objectStore("events");
+
+      const getReq = docStore.get(docId);
+      getReq.onsuccess = () => {
+        const doc = getReq.result;
+        if (!doc || doc.userId !== userId) {
+          tx.abort();
+          tx._ok = false;
+          return;
+        }
+        for (const event of events) {
+          eventStore.delete(event.id);
+        }
+        docStore.delete(docId);
+        tx._ok = true;
+      };
+
+      getReq.onerror = () => reject(getReq.error);
+      tx.oncomplete = () => resolve(tx._ok === true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => resolve(false);
+    });
   }
 
   async function deleteEvent(userId, eventId) {
-    const { stores } = await tx(["events"], "readwrite");
-    const event = await reqToPromise(stores[0].get(eventId));
-    if (!event || event.userId !== userId) return false;
-    await reqToPromise(stores[0].delete(eventId));
-    return true;
+    const db = await openDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readwrite");
+      const eventStore = tx.objectStore("events");
+
+      const getReq = eventStore.get(eventId);
+      getReq.onsuccess = () => {
+        const event = getReq.result;
+        if (!event || event.userId !== userId) {
+          tx.abort();
+          tx._ok = false;
+          return;
+        }
+        eventStore.delete(eventId);
+        tx._ok = true;
+      };
+
+      getReq.onerror = () => reject(getReq.error);
+      tx.oncomplete = () => resolve(tx._ok === true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => resolve(false);
+    });
   }
 
   function openBlob(doc, download = false) {
