@@ -19,7 +19,7 @@ Upload kindergarten notices (PDF, DOCX, images) — AI extracts dates and shows 
 | `OPENROUTER_API_KEY` | API key from [openrouter.ai](https://openrouter.ai) |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `APP_URL` | `https://alldaygameover-kindergarten-docs.hf.space` |
+| `APP_URL` | `https://alldaygameover-kg-calendar.hf.space` |
 | `SESSION_SECRET` | Random secret string |
 
 ## Google OAuth
@@ -27,5 +27,5 @@ Upload kindergarten notices (PDF, DOCX, images) — AI extracts dates and shows 
 Add this redirect URI in Google Cloud Console:
 
 ```
-https://alldaygameover-kindergarten-docs.hf.space/auth/callback
+https://alldaygameover-kg-calendar.hf.space/auth/callback
 ```
