@@ -230,6 +230,45 @@ async def api_delete_document(document_id: int, user: dict = Depends(get_current
     return {"ok": True}
 
 
+@app.post("/api/analyze")
+async def api_analyze(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Analyze a file in memory only — nothing is saved to disk."""
+    del user  # auth gate only
+    if not os.getenv("OPENROUTER_API_KEY"):
+        raise HTTPException(
+            400,
+            "請先設定 OPENROUTER_API_KEY。到 https://openrouter.ai 免費申請 API key，"
+            "然後在 .env 檔案填入。",
+        )
+
+    if not file.filename:
+        raise HTTPException(400, "缺少檔案")
+
+    file_type = get_file_type(file.filename)
+    if file_type == "unknown":
+        raise HTTPException(400, "不支援的檔案格式")
+
+    try:
+        data = await file.read()
+        content = extract_content(file.filename, data)
+        analysis = await analyze_document(content)
+        events = analysis.get("events", [])
+        valid_events = [e for e in events if e.get("event_date")]
+
+        return {
+            "filename": file.filename,
+            "file_type": file_type,
+            "summary": analysis.get("summary", ""),
+            "events": valid_events,
+            "events_found": len(valid_events),
+        }
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/upload")
 async def api_upload(
     files: list[UploadFile] = File(...),
@@ -310,4 +349,5 @@ async def health(request: Request):
             "nvidia/nemotron-nano-12b-v2-vl:free,nex-agi/nex-n2-pro:free",
         ).split(",")[0],
         "redirect_uri": get_redirect_uri(request),
+        "storage_mode": os.getenv("STORAGE_MODE", "local"),
     }

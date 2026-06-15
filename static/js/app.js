@@ -19,17 +19,18 @@ const FETCH_OPTS = { credentials: "include" };
 let calendar = null;
 let currentEventId = null;
 let currentUser = null;
+let useLocalStorage = true;
 
 document.addEventListener("DOMContentLoaded", async () => {
   initModal();
   initTabs();
   initLegendToggle();
+  await checkHealth();
   const user = await checkAuth();
   if (!user) return;
 
   initCalendar();
   initUpload();
-  checkHealth();
   loadDocuments();
 });
 
@@ -125,6 +126,20 @@ function showApp(user) {
   }
 }
 
+async function fetchCalendarEvents() {
+  if (useLocalStorage) {
+    const events = await LocalStore.getEvents(currentUser.id);
+    return LocalStore.eventsToCalendar(events);
+  }
+
+  const res = await fetch("/api/events", FETCH_OPTS);
+  if (res.status === 401) {
+    showLoginScreen();
+    return [];
+  }
+  return res.json();
+}
+
 function initCalendar() {
   const el = document.getElementById("calendar");
   const mobile = isMobile();
@@ -138,13 +153,7 @@ function initCalendar() {
     height: "auto",
     events: async (info, success, failure) => {
       try {
-        const res = await fetch("/api/events", FETCH_OPTS);
-        if (res.status === 401) {
-          showLoginScreen();
-          success([]);
-          return;
-        }
-        success(await res.json());
+        success(await fetchCalendarEvents());
       } catch (err) {
         failure(err);
       }
@@ -200,30 +209,11 @@ async function uploadFiles(files) {
   progress.classList.remove("hidden");
   results.innerHTML = "";
 
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append("files", file);
-  }
-
   try {
-    const res = await fetch("/api/upload", { method: "POST", body: formData, credentials: "include" });
-    const data = await res.json();
-
-    if (res.status === 401) {
-      showLoginScreen();
-      return;
-    }
-    if (!res.ok) {
-      results.innerHTML = `<div class="result-item error">${data.detail || "上傳失敗"}</div>`;
-      return;
-    }
-
-    for (const r of data.results) {
-      const cls = r.success ? "success" : "error";
-      const msg = r.success
-        ? `✓ ${r.filename} — 找到 ${r.events_found} 個活動。${r.summary || ""}`
-        : `✗ ${r.filename} — ${r.error}`;
-      results.innerHTML += `<div class="result-item ${cls}">${msg}</div>`;
+    if (useLocalStorage) {
+      await uploadFilesLocal(files, results);
+    } else {
+      await uploadFilesServer(files, results);
     }
 
     calendar.refetchEvents();
@@ -238,17 +228,71 @@ async function uploadFiles(files) {
   }
 }
 
+async function uploadFilesLocal(files, results) {
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      const data = await res.json();
+
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      if (!res.ok) {
+        results.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(data.detail || "分析失敗")}</div>`;
+        continue;
+      }
+
+      const { eventCount } = await LocalStore.saveDocumentWithEvents(currentUser.id, file, data);
+      results.innerHTML += `<div class="result-item success">✓ ${escapeHtml(file.name)} — 找到 ${eventCount} 個活動，已儲存至此手機。${escapeHtml(data.summary || "")}</div>`;
+    } catch (err) {
+      results.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(err.message)}</div>`;
+    }
+  }
+}
+
+async function uploadFilesServer(files, results) {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file);
+  }
+
+  const res = await fetch("/api/upload", { method: "POST", body: formData, credentials: "include" });
+  const data = await res.json();
+
+  if (res.status === 401) {
+    showLoginScreen();
+    return;
+  }
+  if (!res.ok) {
+    results.innerHTML = `<div class="result-item error">${data.detail || "上傳失敗"}</div>`;
+    return;
+  }
+
+  for (const r of data.results) {
+    const cls = r.success ? "success" : "error";
+    const msg = r.success
+      ? `✓ ${r.filename} — 找到 ${r.events_found} 個活動。${r.summary || ""}`
+      : `✗ ${r.filename} — ${r.error}`;
+    results.innerHTML += `<div class="result-item ${cls}">${msg}</div>`;
+  }
+}
+
 async function loadDocuments() {
   const list = document.getElementById("docs-list");
   const countEl = document.getElementById("docs-count");
 
   try {
-    const res = await fetch("/api/documents", FETCH_OPTS);
-    if (res.status === 401) {
-      showLoginScreen();
-      return;
-    }
-    const docs = await res.json();
+    const docs = useLocalStorage
+      ? await LocalStore.getDocuments(currentUser.id)
+      : await fetchServerDocuments();
 
     countEl.textContent = `${docs.length} 份`;
 
@@ -266,16 +310,23 @@ async function loadDocuments() {
           <div class="doc-card-meta">
             <span>${formatDate(d.uploaded_at)}</span>
             <span>${d.event_count || 0} 個活動</span>
+            ${useLocalStorage ? "<span>📱 此手機</span>" : ""}
           </div>
         </div>
         <div class="doc-card-actions">
-          ${canViewFile(d.file_type) ? `<a class="btn btn-primary btn-sm" href="/api/documents/${d.id}/file" target="_blank" rel="noopener">查看</a>` : ""}
-          <a class="btn btn-secondary btn-sm" href="/api/documents/${d.id}/file?download=1">下載</a>
+          ${canViewFile(d.file_type) ? `<button type="button" class="btn btn-primary btn-sm doc-view-btn" data-id="${d.id}">查看</button>` : ""}
+          <button type="button" class="btn btn-secondary btn-sm doc-download-btn" data-id="${d.id}">下載</button>
           <button type="button" class="btn btn-outline btn-sm doc-delete-btn" data-id="${d.id}" data-filename="${escapeAttr(d.filename)}">刪除</button>
         </div>
       </article>
     `).join("");
 
+    list.querySelectorAll(".doc-view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => viewDocument(Number(btn.dataset.id)));
+    });
+    list.querySelectorAll(".doc-download-btn").forEach((btn) => {
+      btn.addEventListener("click", () => downloadDocument(Number(btn.dataset.id)));
+    });
     list.querySelectorAll(".doc-delete-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         deleteDocument(Number(btn.dataset.id), btn.dataset.filename);
@@ -287,8 +338,43 @@ async function loadDocuments() {
   }
 }
 
+async function fetchServerDocuments() {
+  const res = await fetch("/api/documents", FETCH_OPTS);
+  if (res.status === 401) {
+    showLoginScreen();
+    return [];
+  }
+  return res.json();
+}
+
 function canViewFile(fileType) {
   return fileType === "pdf" || fileType === "image";
+}
+
+async function viewDocument(docId) {
+  if (useLocalStorage) {
+    const doc = await LocalStore.getDocument(currentUser.id, docId);
+    if (!doc) {
+      alert("找不到文件");
+      return;
+    }
+    LocalStore.openBlob(doc, false);
+    return;
+  }
+  window.open(`/api/documents/${docId}/file`, "_blank", "noopener");
+}
+
+async function downloadDocument(docId) {
+  if (useLocalStorage) {
+    const doc = await LocalStore.getDocument(currentUser.id, docId);
+    if (!doc) {
+      alert("找不到文件");
+      return;
+    }
+    LocalStore.openBlob(doc, true);
+    return;
+  }
+  window.location.href = `/api/documents/${docId}/file?download=1`;
 }
 
 async function deleteDocument(docId, filename) {
@@ -296,17 +382,25 @@ async function deleteDocument(docId, filename) {
   if (!confirm(msg)) return;
 
   try {
-    const res = await fetch(`/api/documents/${docId}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    if (res.status === 401) {
-      showLoginScreen();
-      return;
-    }
-    if (!res.ok) {
-      alert("刪除失敗");
-      return;
+    if (useLocalStorage) {
+      const ok = await LocalStore.deleteDocument(currentUser.id, docId);
+      if (!ok) {
+        alert("刪除失敗");
+        return;
+      }
+    } else {
+      const res = await fetch(`/api/documents/${docId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      if (!res.ok) {
+        alert("刪除失敗");
+        return;
+      }
     }
     calendar.refetchEvents();
     loadDocuments();
@@ -317,9 +411,18 @@ async function deleteDocument(docId, filename) {
 
 async function checkHealth() {
   const badge = document.getElementById("status-badge");
+  const privacyNote = document.getElementById("privacy-note");
+
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
+
+    useLocalStorage = data.storage_mode !== "server";
+
+    if (privacyNote) {
+      privacyNote.classList.toggle("hidden", !useLocalStorage);
+    }
+
     if (data.redirect_uri) {
       document.getElementById("redirect-uri-display").textContent = data.redirect_uri;
       document.getElementById("oauth-setup-hint").classList.remove("hidden");
@@ -328,7 +431,7 @@ async function checkHealth() {
       badge.textContent = "請設定 Google OAuth";
       badge.className = "status-badge warn";
     } else if (data.api_key_set) {
-      badge.textContent = "AI 已就緒";
+      badge.textContent = useLocalStorage ? "本機儲存" : "AI 已就緒";
       badge.className = "status-badge ok";
     } else {
       badge.textContent = "請設定 API Key";
@@ -384,13 +487,25 @@ async function deleteCurrentEvent() {
   if (!currentEventId || !confirm("確定要刪除此活動？")) return;
 
   try {
-    const res = await fetch(`/api/events/${currentEventId}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    if (res.status === 401) {
-      showLoginScreen();
-      return;
+    if (useLocalStorage) {
+      const ok = await LocalStore.deleteEvent(currentUser.id, Number(currentEventId));
+      if (!ok) {
+        alert("刪除失敗");
+        return;
+      }
+    } else {
+      const res = await fetch(`/api/events/${currentEventId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        showLoginScreen();
+        return;
+      }
+      if (!res.ok) {
+        alert("刪除失敗");
+        return;
+      }
     }
     closeModal();
     calendar.refetchEvents();

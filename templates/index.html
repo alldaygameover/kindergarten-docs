@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#4a7c59">
   <title>幼稚園文件月曆</title>
+  <link rel="manifest" href="/static/manifest.json">
   <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -52,6 +53,8 @@
       <button type="button" class="tab-btn" data-tab="calendar">月曆</button>
       <button type="button" class="tab-btn" data-tab="docs">文件</button>
     </nav>
+
+    <p id="privacy-note" class="privacy-note hidden">🔒 文件同月曆儲存在此手機瀏覽器，伺服器只作 AI 分析，不會保存你的文件。</p>
 
     <section class="upload-section tab-panel active" data-panel="upload">
       <div id="drop-zone" class="drop-zone">
@@ -108,6 +111,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script src="/static/js/storage.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>
