@@ -207,7 +207,7 @@ body {
 .tab-panel { display: block; }
 .tab-panel:not(.active) { display: none; }
 
-.upload-section, .calendar-section, .docs-section {
+.upload-section, .calendar-section, .events-section, .docs-section {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 1rem;
@@ -346,7 +346,77 @@ body {
 
 #calendar { min-height: 420px; }
 
-.docs-list { display: flex; flex-direction: column; gap: 0.65rem; }
+.docs-list, .events-list { display: flex; flex-direction: column; gap: 0.65rem; }
+
+.events-subsection { margin-bottom: 1.25rem; }
+.events-subsection:last-child { margin-bottom: 0; }
+.events-subtitle {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.events-subcount {
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--bg);
+  padding: 0.15rem 0.5rem;
+  border-radius: 12px;
+}
+
+.event-card {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.event-card:hover, .event-card:active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.event-card.past { opacity: 0.75; }
+.event-card-badge {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 8px;
+  min-width: 2.5rem;
+  text-align: center;
+  line-height: 1.3;
+}
+.event-card-body { flex: 1; min-width: 0; }
+.event-card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+  word-break: break-word;
+}
+.event-card-date {
+  font-size: 0.82rem;
+  color: var(--primary);
+  font-weight: 500;
+  margin-bottom: 0.15rem;
+}
+.event-card-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+}
 
 .doc-card {
   display: flex;
@@ -504,6 +574,10 @@ body {
   .status-badge { display: none; }
   .user-name { display: none; }
   .mobile-tabs { display: flex; }
+  .tab-btn {
+    font-size: 0.82rem;
+    padding: 0.7rem 0.35rem;
+  }
   .legend-toggle { display: inline-flex; align-items: center; }
   .main { padding: 0.75rem; gap: 0; }
   .tab-panel.active { margin-top: 0.75rem; }
@@ -547,7 +621,7 @@ body {
   .header { padding: 1.5rem 2rem; }
   .logo h1 { font-size: 1.5rem; }
   .subtitle { display: block; }
-  .upload-section, .calendar-section, .docs-section { padding: 1.5rem; }
+  .upload-section, .calendar-section, .events-section, .docs-section { padding: 1.5rem; }
   .drop-zone { padding: 2.5rem; }
   #calendar { min-height: 600px; }
   .modal { align-items: center; }

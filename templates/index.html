@@ -51,6 +51,7 @@
     <nav class="mobile-tabs" aria-label="主要功能">
       <button type="button" class="tab-btn active" data-tab="upload">上傳</button>
       <button type="button" class="tab-btn" data-tab="calendar">月曆</button>
+      <button type="button" class="tab-btn" data-tab="events">活動</button>
       <button type="button" class="tab-btn" data-tab="docs">文件</button>
     </nav>
 
@@ -88,6 +89,25 @@
         <span class="legend-item" data-color="#27ae60">外出</span>
       </div>
       <div id="calendar"></div>
+    </section>
+
+    <section class="events-section tab-panel" data-panel="events">
+      <div class="section-header">
+        <h2>活動列表</h2>
+        <span id="events-count" class="docs-count">0 個</span>
+      </div>
+      <div class="events-subsection">
+        <h3 class="events-subtitle">即將舉行 <span id="upcoming-count" class="events-subcount"></span></h3>
+        <div id="upcoming-list" class="events-list">
+          <p class="empty-state">暫無即將舉行的活動</p>
+        </div>
+      </div>
+      <div class="events-subsection">
+        <h3 class="events-subtitle">已結束 <span id="past-count" class="events-subcount"></span></h3>
+        <div id="past-list" class="events-list">
+          <p class="empty-state">暫無已結束的活動</p>
+        </div>
+      </div>
     </section>
 
     <section class="docs-section tab-panel" data-panel="docs">

@@ -8,6 +8,16 @@ const CATEGORY_LABELS = {
   other: "其他",
 };
 
+const CATEGORY_COLORS = {
+  holiday: "#e74c3c",
+  activity: "#3498db",
+  payment: "#f39c12",
+  uniform: "#9b59b6",
+  meeting: "#1abc9c",
+  excursion: "#27ae60",
+  other: "#95a5a6",
+};
+
 const FILE_TYPE_ICONS = {
   pdf: "📕",
   doc: "📘",
@@ -34,6 +44,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initUpload();
   initAddEvent();
   loadDocuments();
+  loadEventsList();
 });
 
 function isMobile() {
@@ -51,6 +62,9 @@ function initTabs() {
       panels.forEach((p) => p.classList.toggle("active", p.dataset.panel === tab));
       if (tab === "calendar" && calendar) {
         calendar.updateSize();
+      }
+      if (tab === "events") {
+        loadEventsList();
       }
     });
   });
@@ -77,6 +91,233 @@ function switchTab(tab) {
   if (tab === "calendar" && calendar) {
     calendar.updateSize();
   }
+  if (tab === "events") {
+    loadEventsList();
+  }
+}
+
+function refreshEventsUI() {
+  if (calendar) calendar.refetchEvents();
+  loadEventsList();
+}
+
+async function fetchRawEvents() {
+  if (useLocalStorage) {
+    const events = await LocalStore.getEvents(currentUser.id);
+    return events.map(normalizeLocalEvent);
+  }
+
+  const res = await fetch("/api/events", FETCH_OPTS);
+  if (res.status === 401) {
+    showLoginScreen();
+    return [];
+  }
+  const calendarEvents = await res.json();
+  return calendarEvents.map(calendarEventToRaw);
+}
+
+function normalizeLocalEvent(event) {
+  return {
+    id: event.id,
+    title: event.title,
+    eventDate: event.eventDate,
+    endDate: event.endDate && event.endDate !== "null" ? event.endDate : null,
+    eventTime: event.eventTime && event.eventTime !== "null" ? event.eventTime : null,
+    category: event.category || "other",
+    location: event.location || null,
+    description: event.description || null,
+    notes: event.notes || null,
+    filename: event.filename || null,
+  };
+}
+
+function calendarEventToRaw(fc) {
+  const props = fc.extendedProps || {};
+  const start = toDateString(fc.start);
+  let endDate = null;
+
+  if (fc.end) {
+    const endStr = toDateString(fc.end);
+    endDate = fc.allDay ? subtractDays(endStr, 1) : endStr;
+    if (endDate === start) endDate = null;
+  }
+
+  return {
+    id: fc.id,
+    title: fc.title,
+    eventDate: start,
+    endDate,
+    eventTime: props.time || null,
+    category: props.category || "other",
+    location: props.location || null,
+    description: props.description || null,
+    notes: props.notes || null,
+    filename: props.filename || null,
+  };
+}
+
+function toDateString(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.slice(0, 10);
+  return value.toISOString().slice(0, 10);
+}
+
+function subtractDays(dateStr, days) {
+  const d = new Date(`${dateStr}T12:00:00`);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function getEventLastDay(event) {
+  const eventDate = event.eventDate || event.event_date;
+  if (!eventDate || eventDate === "null") return null;
+  const endDate = event.endDate || event.end_date;
+  if (endDate && endDate !== "null") return endDate;
+  return eventDate;
+}
+
+function splitEventsByStatus(events) {
+  const today = new Date().toISOString().slice(0, 10);
+  const valid = events.filter((e) => getEventLastDay(e));
+
+  const upcoming = valid
+    .filter((e) => getEventLastDay(e) >= today)
+    .sort((a, b) => (a.eventDate || a.event_date).localeCompare(b.eventDate || b.event_date));
+
+  const past = valid
+    .filter((e) => getEventLastDay(e) < today)
+    .sort((a, b) => (b.eventDate || b.event_date).localeCompare(a.eventDate || a.event_date));
+
+  return { upcoming, past };
+}
+
+function formatListDate(event) {
+  const eventDate = event.eventDate || event.event_date;
+  const endDate = event.endDate || event.end_date;
+  const eventTime = event.eventTime || event.event_time;
+  const opts = { month: "short", day: "numeric", year: "numeric" };
+  const startLabel = new Date(`${eventDate}T12:00:00`).toLocaleDateString("zh-HK", opts);
+
+  if (endDate && endDate !== eventDate) {
+    const endLabel = new Date(`${endDate}T12:00:00`).toLocaleDateString("zh-HK", opts);
+    return `${startLabel} — ${endLabel}`;
+  }
+  if (eventTime) return `${startLabel} ${eventTime}`;
+  return startLabel;
+}
+
+function renderEventCard(event, past = false) {
+  const category = event.category || "other";
+  const color = CATEGORY_COLORS[category] || CATEGORY_COLORS.other;
+  const label = CATEGORY_LABELS[category] || category;
+  const meta = [
+    event.location ? `📍 ${event.location}` : "",
+    event.filename ? `📄 ${event.filename}` : "",
+  ].filter(Boolean);
+
+  return `
+    <button type="button" class="event-card${past ? " past" : ""}" data-id="${event.id}">
+      <span class="event-card-badge" style="background:${color}">${label}</span>
+      <div class="event-card-body">
+        <div class="event-card-title">${escapeHtml(event.title)}</div>
+        <div class="event-card-date">${escapeHtml(formatListDate(event))}</div>
+        ${meta.length ? `<div class="event-card-meta">${meta.map((m) => escapeHtml(m)).join("")}</div>` : ""}
+      </div>
+    </button>
+  `;
+}
+
+function renderEventsSublist(events, past = false) {
+  if (!events.length) {
+    return `<p class="empty-state">${past ? "暫無已結束的活動" : "暫無即將舉行的活動"}</p>`;
+  }
+  return events.map((e) => renderEventCard(e, past)).join("");
+}
+
+async function loadEventsList() {
+  const upcomingList = document.getElementById("upcoming-list");
+  const pastList = document.getElementById("past-list");
+  const countEl = document.getElementById("events-count");
+  const upcomingCount = document.getElementById("upcoming-count");
+  const pastCount = document.getElementById("past-count");
+
+  if (!upcomingList || !pastList) return;
+
+  try {
+    const events = await fetchRawEvents();
+    const { upcoming, past } = splitEventsByStatus(events);
+
+    countEl.textContent = `${events.length} 個`;
+    upcomingCount.textContent = upcoming.length ? `(${upcoming.length})` : "";
+    pastCount.textContent = past.length ? `(${past.length})` : "";
+
+    upcomingList.innerHTML = renderEventsSublist(upcoming, false);
+    pastList.innerHTML = renderEventsSublist(past, true);
+
+    upcomingList.querySelectorAll(".event-card").forEach((card) => {
+      card.addEventListener("click", () => openEventFromList(card.dataset.id));
+    });
+    pastList.querySelectorAll(".event-card").forEach((card) => {
+      card.addEventListener("click", () => openEventFromList(card.dataset.id));
+    });
+  } catch {
+    upcomingList.innerHTML = '<p class="empty-state">無法載入活動列表</p>';
+    pastList.innerHTML = "";
+    countEl.textContent = "0 個";
+  }
+}
+
+async function openEventFromList(eventId) {
+  const data = await loadEventData(eventId);
+  if (!data) {
+    alert("找不到活動");
+    return;
+  }
+  currentEventId = String(data.id);
+  setModalView("view");
+  document.getElementById("modal-title").textContent = data.title || "未命名活動";
+  document.getElementById("modal-body").innerHTML = renderEventViewFields(data);
+  document.getElementById("event-modal").classList.remove("hidden");
+}
+
+function renderEventViewFields(data) {
+  const fields = [
+    ["類別", CATEGORY_LABELS[data.category] || data.category],
+    ["日期", formatRawEventDate(data)],
+    ["時間", data.eventTime || data.event_time],
+    ["地點", data.location],
+    ["說明", data.description],
+    ["注意事項", data.notes],
+    ["來源文件", data.filename],
+  ];
+
+  return fields
+    .filter(([, v]) => v)
+    .map(([label, value]) => `
+      <div class="field">
+        <div class="label">${label}</div>
+        <div>${escapeHtml(String(value))}</div>
+      </div>
+    `).join("");
+}
+
+function formatRawEventDate(data) {
+  const eventDate = data.eventDate || data.event_date;
+  const endDate = data.endDate || data.end_date || eventDate;
+  const eventTime = data.eventTime || data.event_time;
+  const start = new Date(`${eventDate}T12:00:00`);
+
+  if (!eventTime) {
+    const end = new Date(`${endDate}T12:00:00`);
+    end.setDate(end.getDate() + 1);
+    return formatEventDate(start, end, true);
+  }
+
+  const startTimed = new Date(`${eventDate}T${eventTime}`);
+  return startTimed.toLocaleDateString("zh-HK") + " " + startTimed.toLocaleTimeString("zh-HK", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 async function checkAuth() {
@@ -232,7 +473,7 @@ async function uploadFiles(files) {
       await uploadFilesServer(files, results);
     }
 
-    calendar.refetchEvents();
+    refreshEventsUI();
     loadDocuments();
     if (isMobile()) {
       switchTab("calendar");
@@ -428,7 +669,7 @@ async function deleteDocument(docId, filename) {
         return;
       }
     }
-    calendar.refetchEvents();
+    refreshEventsUI();
     loadDocuments();
   } catch {
     alert("刪除失敗");
@@ -497,25 +738,16 @@ async function showEventModal(event) {
   const props = event.extendedProps;
 
   document.getElementById("modal-title").textContent = event.title;
-
-  const fields = [
-    ["類別", CATEGORY_LABELS[props.category] || props.category],
-    ["日期", formatEventDate(event.start, event.end, event.allDay)],
-    ["時間", props.time],
-    ["地點", props.location],
-    ["說明", props.description],
-    ["注意事項", props.notes],
-    ["來源文件", props.filename],
-  ];
-
-  document.getElementById("modal-body").innerHTML = fields
-    .filter(([, v]) => v)
-    .map(([label, value]) => `
-      <div class="field">
-        <div class="label">${label}</div>
-        <div>${escapeHtml(String(value))}</div>
-      </div>
-    `).join("");
+  document.getElementById("modal-body").innerHTML = renderEventViewFields({
+    category: props.category,
+    eventDate: toDateString(event.start),
+    endDate: event.allDay && event.end ? subtractDays(toDateString(event.end), 1) : toDateString(event.end),
+    eventTime: props.time,
+    location: props.location,
+    description: props.description,
+    notes: props.notes,
+    filename: props.filename,
+  });
 
   document.getElementById("event-modal").classList.remove("hidden");
 }
@@ -660,7 +892,7 @@ async function saveEventForm() {
     }
 
     closeModal();
-    calendar.refetchEvents();
+    refreshEventsUI();
     if (data.eventDate) {
       calendar.gotoDate(data.eventDate);
     }
@@ -701,7 +933,7 @@ async function deleteCurrentEvent() {
       }
     }
     closeModal();
-    calendar.refetchEvents();
+    refreshEventsUI();
   } catch {
     alert("刪除失敗");
   }
