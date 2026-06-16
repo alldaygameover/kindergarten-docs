@@ -30,7 +30,9 @@ let calendar = null;
 let currentEventId = null;
 let modalMode = "view";
 let currentUser = null;
-let useLocalStorage = true;
+let storageMode = "hybrid";
+let useLocalFiles = true;
+let useServerEvents = true;
 
 document.addEventListener("DOMContentLoaded", async () => {
   initModal();
@@ -39,6 +41,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   await checkHealth();
   const user = await checkAuth();
   if (!user) return;
+
+  try {
+    await migrateLocalEventsToServer();
+  } catch {
+    // Migration can retry on next login
+  }
 
   initCalendar();
   initUpload();
@@ -102,18 +110,109 @@ function refreshEventsUI() {
 }
 
 async function fetchRawEvents() {
-  if (useLocalStorage) {
+  if (!useServerEvents) {
     const events = await LocalStore.getEvents(currentUser.id);
     return events.map(normalizeLocalEvent);
   }
 
-  const res = await fetch("/api/events", FETCH_OPTS);
+  const res = await fetch("/api/events/list", FETCH_OPTS);
   if (res.status === 401) {
     showLoginScreen();
     return [];
   }
-  const calendarEvents = await res.json();
-  return calendarEvents.map(calendarEventToRaw);
+  const events = await res.json();
+  return events.map(normalizeServerEvent);
+}
+
+function normalizeServerEvent(event) {
+  const eventDate = LocalStore.parseDateOnly(event.event_date);
+  const endDate = LocalStore.parseDateOnly(event.end_date);
+  const parsedTime = LocalStore.parseTimeOnly(event.event_time);
+  const rawTime = event.event_time && event.event_time !== "null" ? String(event.event_time).trim() : null;
+
+  return {
+    id: event.id,
+    title: event.title,
+    eventDate,
+    endDate: endDate && endDate !== eventDate ? endDate : null,
+    eventTime: parsedTime || rawTime || null,
+    category: event.category || "other",
+    location: event.location || null,
+    description: event.description || null,
+    notes: event.notes || null,
+    filename: event.filename || null,
+  };
+}
+
+async function postEventsBulk(events, sourceFilename) {
+  const res = await fetch("/api/events/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_filename: sourceFilename, events }),
+    credentials: "include",
+  });
+  if (res.status === 401) {
+    showLoginScreen();
+    return null;
+  }
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "活動同步失敗");
+  }
+  return res.json();
+}
+
+async function deleteServerEventsBulk(ids) {
+  if (!ids.length) return;
+  const res = await fetch("/api/events/bulk", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+    credentials: "include",
+  });
+  if (res.status === 401) {
+    showLoginScreen();
+    return;
+  }
+  if (!res.ok) {
+    throw new Error("刪除活動失敗");
+  }
+}
+
+async function migrateLocalEventsToServer() {
+  if (!useServerEvents || !currentUser) return;
+  if (localStorage.getItem("eventsMigrated") === "true") return;
+
+  const events = await LocalStore.getEvents(currentUser.id);
+  if (!events.length) {
+    localStorage.setItem("eventsMigrated", "true");
+    return;
+  }
+
+  const payload = events
+    .map((event) => {
+      const normalized = normalizeLocalEvent(event);
+      if (!normalized.eventDate) return null;
+      return {
+        title: normalized.title,
+        event_date: normalized.eventDate,
+        end_date: normalized.endDate,
+        event_time: normalized.eventTime,
+        location: normalized.location,
+        description: normalized.description,
+        category: normalized.category,
+        notes: normalized.notes,
+        source_filename: normalized.filename || "手動新增",
+      };
+    })
+    .filter(Boolean);
+
+  if (payload.length) {
+    await postEventsBulk(payload, "手機匯入");
+  }
+
+  await LocalStore.clearAllEvents(currentUser.id);
+  localStorage.setItem("eventsMigrated", "true");
 }
 
 function normalizeLocalEvent(event) {
@@ -375,7 +474,7 @@ function showApp(user) {
 }
 
 async function fetchCalendarEvents() {
-  if (useLocalStorage) {
+  if (!useServerEvents) {
     const events = await LocalStore.getEvents(currentUser.id);
     return LocalStore.eventsToCalendar(events);
   }
@@ -472,7 +571,7 @@ async function uploadFiles(files) {
   results.innerHTML = "";
 
   try {
-    if (useLocalStorage) {
+    if (useLocalFiles) {
       await uploadFilesLocal(files, results);
     } else {
       await uploadFilesServer(files, results);
@@ -512,8 +611,23 @@ async function uploadFilesLocal(files, results) {
         continue;
       }
 
-      const { eventCount } = await LocalStore.saveDocumentWithEvents(currentUser.id, file, data);
-      results.innerHTML += `<div class="result-item success">✓ ${escapeHtml(file.name)} — 找到 ${eventCount} 個活動，已儲存至此手機。${escapeHtml(data.summary || "")}</div>`;
+      let eventCount = 0;
+      if (useServerEvents) {
+        const { docId } = await LocalStore.saveDocumentOnly(currentUser.id, file, data);
+        if (data.events?.length) {
+          const bulk = await postEventsBulk(data.events, file.name);
+          if (bulk?.ids?.length) {
+            await LocalStore.setDocumentServerEventIds(docId, bulk.ids);
+            eventCount = bulk.ids.length;
+          }
+        }
+      } else {
+        const saved = await LocalStore.saveDocumentWithEvents(currentUser.id, file, data);
+        eventCount = saved.eventCount;
+      }
+
+      const storageNote = useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。";
+      results.innerHTML += `<div class="result-item success">✓ ${escapeHtml(file.name)} — 找到 ${eventCount} 個活動，${storageNote}${escapeHtml(data.summary || "")}</div>`;
 
       if (eventCount > 0 && data.events?.length) {
         const firstDate = data.events
@@ -562,7 +676,7 @@ async function loadDocuments() {
   const countEl = document.getElementById("docs-count");
 
   try {
-    const docs = useLocalStorage
+    const docs = useLocalFiles
       ? await LocalStore.getDocuments(currentUser.id)
       : await fetchServerDocuments();
 
@@ -582,7 +696,7 @@ async function loadDocuments() {
           <div class="doc-card-meta">
             <span>${formatDate(d.uploaded_at)}</span>
             <span>${d.event_count || 0} 個活動</span>
-            ${useLocalStorage ? "<span>📱 此手機</span>" : ""}
+            ${useLocalFiles ? "<span>📱 此手機</span>" : ""}
           </div>
         </div>
         <div class="doc-card-actions">
@@ -624,7 +738,7 @@ function canViewFile(fileType) {
 }
 
 async function viewDocument(docId) {
-  if (useLocalStorage) {
+  if (useLocalFiles) {
     const doc = await LocalStore.getDocument(currentUser.id, docId);
     if (!doc) {
       alert("找不到文件");
@@ -637,7 +751,7 @@ async function viewDocument(docId) {
 }
 
 async function downloadDocument(docId) {
-  if (useLocalStorage) {
+  if (useLocalFiles) {
     const doc = await LocalStore.getDocument(currentUser.id, docId);
     if (!doc) {
       alert("找不到文件");
@@ -654,11 +768,14 @@ async function deleteDocument(docId, filename) {
   if (!confirm(msg)) return;
 
   try {
-    if (useLocalStorage) {
-      const ok = await LocalStore.deleteDocument(currentUser.id, docId);
-      if (!ok) {
+    if (useLocalFiles) {
+      const result = await LocalStore.deleteDocument(currentUser.id, docId);
+      if (!result.ok) {
         alert("刪除失敗");
         return;
+      }
+      if (useServerEvents && result.serverEventIds?.length) {
+        await deleteServerEventsBulk(result.serverEventIds);
       }
     } else {
       const res = await fetch(`/api/documents/${docId}`, {
@@ -688,13 +805,21 @@ async function checkHealth() {
     const res = await fetch("/api/health");
     const data = await res.json();
 
-    useLocalStorage = data.storage_mode !== "server";
+    storageMode = data.storage_mode || "hybrid";
+    useLocalFiles = data.files_storage ? data.files_storage === "local" : storageMode !== "server";
+    useServerEvents = data.events_storage ? data.events_storage === "server" : storageMode !== "local";
 
     if (!data.google_oauth_set) {
       badge.textContent = "請設定 Google OAuth";
       badge.className = "status-badge warn";
     } else if (data.api_key_set) {
-      badge.textContent = useLocalStorage ? "本機儲存" : "AI 已就緒";
+      if (storageMode === "hybrid") {
+        badge.textContent = "活動同步";
+      } else if (useLocalFiles) {
+        badge.textContent = "本機儲存";
+      } else {
+        badge.textContent = "AI 已就緒";
+      }
       badge.className = "status-badge ok";
     } else {
       badge.textContent = "請設定 API Key";
@@ -780,7 +905,7 @@ async function showEventForm(mode, opts = {}) {
 }
 
 async function loadEventData(eventId) {
-  if (useLocalStorage) {
+  if (!useServerEvents) {
     return LocalStore.getEvent(currentUser.id, Number(eventId));
   }
   const res = await fetch(`/api/events/${eventId}`, FETCH_OPTS);
@@ -842,7 +967,7 @@ async function saveEventForm() {
 
   try {
     if (modalMode === "create") {
-      if (useLocalStorage) {
+      if (!useServerEvents) {
         await LocalStore.addEvent(currentUser.id, data);
       } else {
         const res = await fetch("/api/events", {
@@ -862,7 +987,7 @@ async function saveEventForm() {
         }
       }
     } else if (modalMode === "edit" && currentEventId) {
-      if (useLocalStorage) {
+      if (!useServerEvents) {
         const ok = await LocalStore.updateEvent(currentUser.id, Number(currentEventId), data);
         if (!ok) {
           alert("儲存失敗");
@@ -908,7 +1033,7 @@ async function deleteCurrentEvent() {
   if (!currentEventId || !confirm("確定要刪除此活動？")) return;
 
   try {
-    if (useLocalStorage) {
+    if (!useServerEvents) {
       const ok = await LocalStore.deleteEvent(currentUser.id, Number(currentEventId));
       if (!ok) {
         alert("刪除失敗");

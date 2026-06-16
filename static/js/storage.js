@@ -46,6 +46,76 @@ const LocalStore = (() => {
     });
   }
 
+  async function saveDocumentOnly(userId, file, analysis) {
+    const blob = await file.arrayBuffer();
+    const db = await openDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("documents", "readwrite");
+      const docStore = tx.objectStore("documents");
+
+      const docReq = docStore.add({
+        userId,
+        filename: file.name,
+        fileType: analysis.file_type,
+        summary: analysis.summary || "",
+        uploadedAt: new Date().toISOString(),
+        mimeType: file.type || "application/octet-stream",
+        blob,
+        serverEventIds: [],
+      });
+
+      docReq.onsuccess = () => {
+        tx._result = { docId: docReq.result, eventCount: 0 };
+      };
+
+      docReq.onerror = () => reject(docReq.error);
+      tx.oncomplete = () => resolve(tx._result);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function setDocumentServerEventIds(docId, serverEventIds) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("documents", "readwrite");
+      const docStore = tx.objectStore("documents");
+      const getReq = docStore.get(docId);
+
+      getReq.onsuccess = () => {
+        const doc = getReq.result;
+        if (!doc) {
+          tx.abort();
+          tx._ok = false;
+          return;
+        }
+        docStore.put({ ...doc, serverEventIds });
+        tx._ok = true;
+      };
+
+      getReq.onerror = () => reject(getReq.error);
+      tx.oncomplete = () => resolve(tx._ok === true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => resolve(false);
+    });
+  }
+
+  async function clearAllEvents(userId) {
+    const db = await openDb();
+    const events = await getEvents(userId);
+    if (!events.length) return 0;
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readwrite");
+      const eventStore = tx.objectStore("events");
+      for (const event of events) {
+        eventStore.delete(event.id);
+      }
+      tx.oncomplete = () => resolve(events.length);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async function saveDocumentWithEvents(userId, file, analysis) {
     const blob = await file.arrayBuffer();
     const db = await openDb();
@@ -111,7 +181,9 @@ const LocalStore = (() => {
         file_type: doc.fileType,
         summary: doc.summary,
         uploaded_at: doc.uploadedAt,
-        event_count: events.filter((e) => e.documentId === doc.id).length,
+        event_count: Array.isArray(doc.serverEventIds) && doc.serverEventIds.length
+          ? doc.serverEventIds.length
+          : events.filter((e) => e.documentId === doc.id).length,
       }));
   }
 
@@ -334,6 +406,7 @@ const LocalStore = (() => {
           tx._ok = false;
           return;
         }
+        tx._serverEventIds = doc.serverEventIds || [];
         for (const event of events) {
           eventStore.delete(event.id);
         }
@@ -342,9 +415,9 @@ const LocalStore = (() => {
       };
 
       getReq.onerror = () => reject(getReq.error);
-      tx.oncomplete = () => resolve(tx._ok === true);
+      tx.oncomplete = () => resolve({ ok: tx._ok === true, serverEventIds: tx._serverEventIds || [] });
       tx.onerror = () => reject(tx.error);
-      tx.onabort = () => resolve(false);
+      tx.onabort = () => resolve({ ok: false, serverEventIds: [] });
     });
   }
 
@@ -390,6 +463,9 @@ const LocalStore = (() => {
   }
 
   return {
+    saveDocumentOnly,
+    setDocumentServerEventIds,
+    clearAllEvents,
     saveDocumentWithEvents,
     getDocuments,
     getDocument,

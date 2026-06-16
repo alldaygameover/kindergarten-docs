@@ -13,9 +13,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.ai_analyzer import analyze_document
 from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured
 from app.database import (
+    create_events_bulk,
     create_manual_event,
     delete_document,
     delete_event,
+    delete_events_by_ids,
     get_document_by_id,
     get_documents_for_user,
     get_event_by_id,
@@ -204,6 +206,34 @@ async def auth_logout(request: Request):
     return RedirectResponse("/")
 
 
+def normalize_event_payload(event: dict) -> dict | None:
+    event_date = parse_date_only(event.get("event_date"))
+    if not event_date:
+        return None
+    end_date = parse_date_only(event.get("end_date"))
+    parsed_time = parse_time_only(event.get("event_time"))
+    raw_time = event.get("event_time")
+    display_time = None
+    if raw_time and str(raw_time).strip() not in ("", "null"):
+        display_time = parsed_time or str(raw_time).strip()
+    return {
+        "title": event.get("title", "未命名活動"),
+        "description": event.get("description"),
+        "event_date": event_date,
+        "end_date": end_date if end_date and end_date != event_date else None,
+        "event_time": display_time,
+        "location": event.get("location"),
+        "category": event.get("category", "other"),
+        "notes": event.get("notes"),
+        "source_filename": event.get("source_filename"),
+    }
+
+
+@app.get("/api/events/list")
+async def api_events_list(user: dict = Depends(get_current_user)):
+    return await get_events_for_user(user["id"])
+
+
 @app.get("/api/events")
 async def api_events(user: dict = Depends(get_current_user)):
     events = await get_events_for_user(user["id"])
@@ -226,6 +256,46 @@ async def api_get_event(event_id: int, user: dict = Depends(get_current_user)):
     if not event:
         raise HTTPException(404, "找不到該活動")
     return event
+
+
+@app.post("/api/events/bulk")
+async def api_create_events_bulk(
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    raw_events = payload.get("events") or []
+    if not isinstance(raw_events, list) or not raw_events:
+        raise HTTPException(400, "請提供活動列表")
+
+    source_filename = payload.get("source_filename") or "手動新增"
+    normalized = []
+    for event in raw_events:
+        item = normalize_event_payload(event)
+        if item:
+            normalized.append(item)
+
+    if not normalized:
+        raise HTTPException(400, "沒有有效的活動日期")
+
+    ids = await create_events_bulk(
+        user["id"],
+        normalized,
+        source_filename,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    return {"ids": ids, "count": len(ids), "ok": True}
+
+
+@app.delete("/api/events/bulk")
+async def api_delete_events_bulk(
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    event_ids = payload.get("ids") or []
+    if not isinstance(event_ids, list):
+        raise HTTPException(400, "請提供活動 ID 列表")
+    deleted = await delete_events_by_ids(user["id"], [int(i) for i in event_ids])
+    return {"deleted": deleted, "ok": True}
 
 
 @app.post("/api/events")
@@ -429,6 +499,9 @@ async def api_upload(
 
 @app.get("/api/health")
 async def health(request: Request):
+    mode = os.getenv("STORAGE_MODE", "hybrid")
+    files_storage = "local" if mode in ("local", "hybrid") else "server"
+    events_storage = "server" if mode in ("server", "hybrid") else "local"
     return {
         "status": "ok",
         "api_key_set": bool(os.getenv("OPENROUTER_API_KEY")),
@@ -438,5 +511,7 @@ async def health(request: Request):
             "nvidia/nemotron-nano-12b-v2-vl:free,nex-agi/nex-n2-pro:free",
         ).split(",")[0],
         "redirect_uri": get_redirect_uri(request),
-        "storage_mode": os.getenv("STORAGE_MODE", "local"),
+        "storage_mode": mode,
+        "files_storage": files_storage,
+        "events_storage": events_storage,
     }

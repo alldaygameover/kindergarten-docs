@@ -62,6 +62,7 @@ async def init_db() -> None:
         await _ensure_column(db, "documents", "user_id", "INTEGER REFERENCES users(id)")
         await _ensure_column(db, "documents", "stored_path", "TEXT")
         await _ensure_column(db, "events", "user_id", "INTEGER REFERENCES users(id)")
+        await _ensure_column(db, "events", "source_filename", "TEXT")
         await db.commit()
 
 
@@ -163,7 +164,7 @@ async def get_events_for_user(user_id: int) -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT e.*, COALESCE(d.filename, '手動新增') AS filename
+            SELECT e.*, COALESCE(e.source_filename, d.filename, '手動新增') AS filename
             FROM events e
             LEFT JOIN documents d ON e.document_id = d.id
             WHERE d.user_id = ? OR (e.document_id IS NULL AND e.user_id = ?)
@@ -180,7 +181,7 @@ async def get_event_by_id(event_id: int, user_id: int) -> dict | None:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT e.*, COALESCE(d.filename, '手動新增') AS filename
+            SELECT e.*, COALESCE(e.source_filename, d.filename, '手動新增') AS filename
             FROM events e
             LEFT JOIN documents d ON e.document_id = d.id
             WHERE e.id = ?
@@ -197,13 +198,14 @@ async def create_manual_event(user_id: int, data: dict, created_at: str) -> int:
         cursor = await db.execute(
             """
             INSERT INTO events (
-                document_id, user_id, title, description, event_date, end_date,
-                event_time, location, category, notes, created_at
+                document_id, user_id, source_filename, title, description, event_date,
+                end_date, event_time, location, category, notes, created_at
             )
-            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
+                data.get("source_filename", "手動新增"),
                 data.get("title", "未命名活動"),
                 data.get("description"),
                 data["event_date"],
@@ -217,6 +219,65 @@ async def create_manual_event(user_id: int, data: dict, created_at: str) -> int:
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def create_events_bulk(
+    user_id: int,
+    events: list[dict],
+    source_filename: str,
+    created_at: str,
+) -> list[int]:
+    ids = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        for event in events:
+            event_date = event.get("event_date")
+            if not event_date:
+                continue
+            cursor = await db.execute(
+                """
+                INSERT INTO events (
+                    document_id, user_id, source_filename, title, description, event_date,
+                    end_date, event_time, location, category, notes, created_at
+                )
+                VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    event.get("source_filename") or source_filename,
+                    event.get("title", "未命名活動"),
+                    event.get("description"),
+                    event_date,
+                    event.get("end_date"),
+                    event.get("event_time"),
+                    event.get("location"),
+                    event.get("category", "other"),
+                    event.get("notes"),
+                    created_at,
+                ),
+            )
+            ids.append(cursor.lastrowid)
+        await db.commit()
+    return ids
+
+
+async def delete_events_by_ids(user_id: int, event_ids: list[int]) -> int:
+    if not event_ids:
+        return 0
+    placeholders = ",".join("?" * len(event_ids))
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            f"""
+            DELETE FROM events
+            WHERE id IN ({placeholders})
+              AND (
+                document_id IN (SELECT id FROM documents WHERE user_id = ?)
+                OR (document_id IS NULL AND user_id = ?)
+              )
+            """,
+            (*event_ids, user_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 async def update_event(event_id: int, user_id: int, data: dict) -> bool:
