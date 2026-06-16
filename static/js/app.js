@@ -117,12 +117,17 @@ async function fetchRawEvents() {
 }
 
 function normalizeLocalEvent(event) {
+  const eventDate = LocalStore.parseDateOnly(event.eventDate);
+  const endDate = LocalStore.parseDateOnly(event.endDate);
+  const parsedTime = LocalStore.parseTimeOnly(event.eventTime);
+  const rawTime = event.eventTime && event.eventTime !== "null" ? String(event.eventTime).trim() : null;
+
   return {
     id: event.id,
     title: event.title,
-    eventDate: event.eventDate,
-    endDate: event.endDate && event.endDate !== "null" ? event.endDate : null,
-    eventTime: event.eventTime && event.eventTime !== "null" ? event.eventTime : null,
+    eventDate,
+    endDate: endDate && endDate !== eventDate ? endDate : null,
+    eventTime: parsedTime || rawTime || null,
     category: event.category || "other",
     location: event.location || null,
     description: event.description || null,
@@ -394,7 +399,7 @@ function initCalendar() {
       ? { left: "prev,next", center: "title", right: "today" }
       : { left: "prev,next today", center: "title", right: "dayGridMonth,listYear" },
     height: "auto",
-    dayMaxEvents: mobile ? 3 : true,
+    dayMaxEvents: mobile ? 5 : true,
     moreLinkClick: mobile ? "popover" : "week",
     events: async (info, success, failure) => {
       try {

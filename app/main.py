@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,71 @@ CONTENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".doc": "application/msword",
 }
+
+
+def parse_date_only(value) -> str | None:
+    if not value or str(value).strip() in ("", "null"):
+        return None
+    match = re.match(r"(\d{4}-\d{2}-\d{2})", str(value).strip())
+    return match.group(1) if match else None
+
+
+def parse_time_only(value) -> str | None:
+    if not value or str(value).strip() in ("", "null"):
+        return None
+    match = re.search(r"(\d{1,2}):(\d{2})", str(value).strip())
+    if not match:
+        return None
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
+
+def build_calendar_event(e: dict) -> dict | None:
+    event_date = parse_date_only(e.get("event_date"))
+    if not event_date:
+        return None
+
+    end_date = parse_date_only(e.get("end_date")) or event_date
+    parsed_time = parse_time_only(e.get("event_time"))
+    display_time = e.get("event_time") if e.get("event_time") not in (None, "", "null") else None
+
+    color = {
+        "holiday": "#e74c3c",
+        "activity": "#3498db",
+        "payment": "#f39c12",
+        "uniform": "#9b59b6",
+        "meeting": "#1abc9c",
+        "excursion": "#27ae60",
+        "other": "#95a5a6",
+    }.get(e.get("category"), "#95a5a6")
+
+    if parsed_time:
+        start_dt = datetime.fromisoformat(f"{event_date}T{parsed_time}:00")
+        end_dt = start_dt + timedelta(hours=1)
+        start = start_dt.isoformat(timespec="seconds")
+        end = end_dt.isoformat(timespec="seconds")
+        all_day = False
+    else:
+        start = event_date
+        end = (date.fromisoformat(end_date) + timedelta(days=1)).isoformat()
+        all_day = True
+
+    return {
+        "id": e["id"],
+        "title": e["title"],
+        "start": start,
+        "end": end,
+        "allDay": all_day,
+        "backgroundColor": color,
+        "borderColor": color,
+        "extendedProps": {
+            "description": e.get("description"),
+            "time": display_time,
+            "location": e.get("location"),
+            "category": e.get("category"),
+            "notes": e.get("notes"),
+            "filename": e.get("filename"),
+        },
+    }
 
 
 def resolve_document_file(doc: dict, user_id: int) -> Path | None:
@@ -143,39 +209,9 @@ async def api_events(user: dict = Depends(get_current_user)):
     events = await get_events_for_user(user["id"])
     calendar_events = []
     for e in events:
-        color = {
-            "holiday": "#e74c3c",
-            "activity": "#3498db",
-            "payment": "#f39c12",
-            "uniform": "#9b59b6",
-            "meeting": "#1abc9c",
-            "excursion": "#27ae60",
-            "other": "#95a5a6",
-        }.get(e.get("category"), "#95a5a6")
-
-        has_time = bool(e.get("event_time"))
-        start = e["event_date"]
-        end = e.get("end_date") or start
-        if not has_time:
-            end_d = date.fromisoformat(end) + timedelta(days=1)
-            end = end_d.isoformat()
-        calendar_events.append({
-            "id": e["id"],
-            "title": e["title"],
-            "start": start,
-            "end": end,
-            "allDay": not has_time,
-            "backgroundColor": color,
-            "borderColor": color,
-            "extendedProps": {
-                "description": e.get("description"),
-                "time": e.get("event_time"),
-                "location": e.get("location"),
-                "category": e.get("category"),
-                "notes": e.get("notes"),
-                "filename": e.get("filename"),
-            },
-        })
+        calendar_event = build_calendar_event(e)
+        if calendar_event:
+            calendar_events.append(calendar_event)
     return calendar_events
 
 

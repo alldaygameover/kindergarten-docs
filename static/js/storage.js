@@ -68,22 +68,27 @@ const LocalStore = (() => {
       docReq.onsuccess = () => {
         const docId = docReq.result;
         const events = analysis.events || [];
+        let eventCount = 0;
         for (const event of events) {
+          const dates = normalizeStoredDates(event.event_date, event.end_date, event.event_time);
+          if (!dates.eventDate) continue;
+
           eventStore.add({
             userId,
             documentId: docId,
             title: event.title || "未命名活動",
             description: event.description || null,
-            eventDate: event.event_date,
-            endDate: event.end_date || null,
-            eventTime: event.event_time || null,
+            eventDate: dates.eventDate,
+            endDate: dates.endDate,
+            eventTime: dates.eventTime,
             location: event.location || null,
             category: event.category || "other",
             notes: event.notes || null,
             filename: file.name,
           });
+          eventCount += 1;
         }
-        tx._result = { docId, eventCount: events.length };
+        tx._result = { docId, eventCount };
       };
 
       docReq.onerror = () => reject(docReq.error);
@@ -141,6 +146,11 @@ const LocalStore = (() => {
   }
 
   async function addEvent(userId, data) {
+    const dates = normalizeStoredDates(data.eventDate, data.endDate, data.eventTime);
+    if (!dates.eventDate) {
+      throw new Error("無效的日期");
+    }
+
     const db = await openDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("events", "readwrite");
@@ -149,9 +159,9 @@ const LocalStore = (() => {
         documentId: data.documentId ?? null,
         title: data.title || "未命名活動",
         description: data.description || null,
-        eventDate: data.eventDate,
-        endDate: data.endDate || null,
-        eventTime: data.eventTime || null,
+        eventDate: dates.eventDate,
+        endDate: dates.endDate,
+        eventTime: dates.eventTime,
         location: data.location || null,
         category: data.category || "other",
         notes: data.notes || null,
@@ -177,13 +187,24 @@ const LocalStore = (() => {
           tx._ok = false;
           return;
         }
+        const dates = normalizeStoredDates(
+          data.eventDate ?? existing.eventDate,
+          data.endDate !== undefined ? data.endDate : existing.endDate,
+          data.eventTime !== undefined ? data.eventTime : existing.eventTime,
+        );
+        if (!dates.eventDate) {
+          tx.abort();
+          tx._ok = false;
+          return;
+        }
+
         eventStore.put({
           ...existing,
           title: data.title ?? existing.title,
           description: data.description !== undefined ? data.description : existing.description,
-          eventDate: data.eventDate ?? existing.eventDate,
-          endDate: data.endDate !== undefined ? data.endDate : existing.endDate,
-          eventTime: data.eventTime !== undefined ? data.eventTime : existing.eventTime,
+          eventDate: dates.eventDate,
+          endDate: dates.endDate,
+          eventTime: dates.eventTime,
           location: data.location !== undefined ? data.location : existing.location,
           category: data.category ?? existing.category,
           notes: data.notes !== undefined ? data.notes : existing.notes,
@@ -198,43 +219,96 @@ const LocalStore = (() => {
     });
   }
 
+  function parseDateOnly(value) {
+    if (!value || value === "null") return null;
+    const str = String(value).trim();
+    const match = str.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : null;
+  }
+
+  function parseTimeOnly(value) {
+    if (!value || value === "null") return null;
+    const match = String(value).trim().match(/(\d{1,2}):(\d{2})/);
+    if (!match) return null;
+    return `${match[1].padStart(2, "0")}:${match[2]}`;
+  }
+
+  function addDaysSafe(dateStr, days) {
+    const [year, month, day] = dateStr.split("-").map(Number);
+    const dt = new Date(year, month - 1, day + days);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
   function addDays(dateStr, days) {
-    const d = new Date(`${dateStr}T12:00:00`);
-    d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+    return addDaysSafe(dateStr, days);
+  }
+
+  function normalizeStoredDates(eventDate, endDate, eventTime) {
+    const parsedDate = parseDateOnly(eventDate);
+    const parsedEnd = parseDateOnly(endDate);
+    const parsedTime = parseTimeOnly(eventTime);
+    const rawTime = eventTime && eventTime !== "null" ? String(eventTime).trim() : null;
+    return {
+      eventDate: parsedDate,
+      endDate: parsedEnd && parsedEnd !== parsedDate ? parsedEnd : null,
+      eventTime: parsedTime || rawTime || null,
+    };
   }
 
   function eventsToCalendar(events) {
-    return events
-      .filter((e) => e.eventDate && e.eventDate !== "null")
-      .map((e) => {
-        const color = EVENT_COLORS[e.category] || EVENT_COLORS.other;
-        const hasTime = e.eventTime && e.eventTime !== "null";
-        const start = e.eventDate;
-        let end = e.endDate && e.endDate !== "null" ? e.endDate : e.eventDate;
+    const results = [];
 
-        if (!hasTime) {
-          end = addDays(end, 1);
+    for (const e of events) {
+      const eventDate = parseDateOnly(e.eventDate);
+      if (!eventDate) continue;
+
+      const endDate = parseDateOnly(e.endDate) || eventDate;
+      const parsedTime = parseTimeOnly(e.eventTime);
+      const displayTime = e.eventTime && e.eventTime !== "null" ? e.eventTime : null;
+      const color = EVENT_COLORS[e.category] || EVENT_COLORS.other;
+
+      let start;
+      let end;
+      let allDay;
+
+      if (parsedTime) {
+        start = `${eventDate}T${parsedTime}:00`;
+        const [hours, minutes] = parsedTime.split(":").map(Number);
+        if (hours < 23) {
+          end = `${eventDate}T${String(hours + 1).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`;
+        } else {
+          end = `${addDaysSafe(eventDate, 1)}T00:00:00`;
         }
+        allDay = false;
+      } else {
+        start = eventDate;
+        end = addDaysSafe(endDate, 1);
+        allDay = true;
+      }
 
-        return {
-          id: String(e.id),
-          title: e.title,
-          start,
-          end,
-          allDay: !hasTime,
-          backgroundColor: color,
-          borderColor: color,
-          extendedProps: {
-            description: e.description,
-            time: e.eventTime,
-            location: e.location,
-            category: e.category,
-            notes: e.notes,
-            filename: e.filename,
-          },
-        };
+      results.push({
+        id: String(e.id),
+        title: e.title,
+        start,
+        end,
+        allDay,
+        backgroundColor: color,
+        borderColor: color,
+        extendedProps: {
+          description: e.description,
+          time: displayTime,
+          location: e.location,
+          category: e.category,
+          notes: e.notes,
+          filename: e.filename,
+        },
       });
+    }
+
+    return results;
   }
 
   async function deleteDocument(userId, docId) {
@@ -328,5 +402,8 @@ const LocalStore = (() => {
     deleteEvent,
     openBlob,
     addDays,
+    addDaysSafe,
+    parseDateOnly,
+    parseTimeOnly,
   };
 })();
