@@ -18,6 +18,7 @@ const FETCH_OPTS = { credentials: "include" };
 
 let calendar = null;
 let currentEventId = null;
+let modalMode = "view";
 let currentUser = null;
 let useLocalStorage = true;
 
@@ -31,6 +32,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   initCalendar();
   initUpload();
+  initAddEvent();
   loadDocuments();
 });
 
@@ -145,12 +147,14 @@ function initCalendar() {
   const mobile = isMobile();
 
   calendar = new FullCalendar.Calendar(el, {
-    initialView: mobile ? "listYear" : "dayGridMonth",
+    initialView: "dayGridMonth",
     locale: "zh-tw",
     headerToolbar: mobile
       ? { left: "prev,next", center: "title", right: "today" }
       : { left: "prev,next today", center: "title", right: "dayGridMonth,listYear" },
     height: "auto",
+    dayMaxEvents: mobile ? 3 : true,
+    moreLinkClick: mobile ? "popover" : "week",
     events: async (info, success, failure) => {
       try {
         success(await fetchCalendarEvents());
@@ -161,6 +165,9 @@ function initCalendar() {
     eventClick(info) {
       showEventModal(info.event);
     },
+    dateClick(info) {
+      showEventForm("create", { eventDate: info.dateStr });
+    },
     eventDidMount(info) {
       info.el.title = info.event.title;
     },
@@ -169,6 +176,15 @@ function initCalendar() {
 
   window.addEventListener("resize", () => {
     calendar.updateSize();
+  });
+}
+
+function initAddEvent() {
+  const btn = document.getElementById("add-event-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    showEventForm("create", { eventDate: today });
   });
 }
 
@@ -458,17 +474,33 @@ function initModal() {
   modal.querySelector(".modal-backdrop").addEventListener("click", closeModal);
   modal.querySelector(".modal-close").addEventListener("click", closeModal);
   document.getElementById("modal-delete").addEventListener("click", deleteCurrentEvent);
+  document.getElementById("modal-edit").addEventListener("click", () => {
+    if (currentEventId) showEventForm("edit", { eventId: currentEventId });
+  });
+  document.getElementById("modal-cancel").addEventListener("click", closeModal);
+  document.getElementById("modal-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveEventForm();
+  });
 }
 
-function showEventModal(event) {
+function setModalView(mode) {
+  modalMode = mode;
+  const isForm = mode === "create" || mode === "edit";
+  document.getElementById("modal-view").classList.toggle("hidden", isForm);
+  document.getElementById("modal-form").classList.toggle("hidden", !isForm);
+}
+
+async function showEventModal(event) {
   currentEventId = event.id;
+  setModalView("view");
   const props = event.extendedProps;
 
   document.getElementById("modal-title").textContent = event.title;
 
   const fields = [
     ["類別", CATEGORY_LABELS[props.category] || props.category],
-    ["日期", formatEventDate(event.start, event.end)],
+    ["日期", formatEventDate(event.start, event.end, event.allDay)],
     ["時間", props.time],
     ["地點", props.location],
     ["說明", props.description],
@@ -488,9 +520,160 @@ function showEventModal(event) {
   document.getElementById("event-modal").classList.remove("hidden");
 }
 
+async function showEventForm(mode, opts = {}) {
+  setModalView(mode);
+  currentEventId = mode === "edit" ? opts.eventId : null;
+  document.getElementById("modal-title").textContent = mode === "create" ? "新增活動" : "編輯活動";
+
+  const form = document.getElementById("modal-form");
+  form.reset();
+
+  if (mode === "create") {
+    document.getElementById("form-date").value = opts.eventDate || "";
+    document.getElementById("form-category").value = "activity";
+  } else {
+    const data = await loadEventData(opts.eventId);
+    if (!data) {
+      alert("找不到活動");
+      closeModal();
+      return;
+    }
+    document.getElementById("form-title").value = data.title || "";
+    document.getElementById("form-category").value = data.category || "other";
+    document.getElementById("form-date").value = data.eventDate || data.event_date || "";
+    document.getElementById("form-end-date").value = data.endDate || data.end_date || "";
+    document.getElementById("form-time").value = data.eventTime || data.event_time || "";
+    document.getElementById("form-location").value = data.location || "";
+    document.getElementById("form-description").value = data.description || "";
+    document.getElementById("form-notes").value = data.notes || "";
+  }
+
+  document.getElementById("event-modal").classList.remove("hidden");
+}
+
+async function loadEventData(eventId) {
+  if (useLocalStorage) {
+    return LocalStore.getEvent(currentUser.id, Number(eventId));
+  }
+  const res = await fetch(`/api/events/${eventId}`, FETCH_OPTS);
+  if (res.status === 401) {
+    showLoginScreen();
+    return null;
+  }
+  if (!res.ok) return null;
+  return res.json();
+}
+
+function readEventForm() {
+  const title = document.getElementById("form-title").value.trim();
+  const eventDate = document.getElementById("form-date").value;
+  const endDate = document.getElementById("form-end-date").value;
+  const eventTime = document.getElementById("form-time").value;
+
+  if (!title) {
+    alert("請輸入標題");
+    return null;
+  }
+  if (!eventDate) {
+    alert("請選擇日期");
+    return null;
+  }
+  if (endDate && endDate < eventDate) {
+    alert("結束日期不能早於開始日期");
+    return null;
+  }
+
+  return {
+    title,
+    category: document.getElementById("form-category").value,
+    eventDate,
+    endDate: endDate || null,
+    eventTime: eventTime || null,
+    location: document.getElementById("form-location").value.trim() || null,
+    description: document.getElementById("form-description").value.trim() || null,
+    notes: document.getElementById("form-notes").value.trim() || null,
+  };
+}
+
+function toServerPayload(data) {
+  return {
+    title: data.title,
+    category: data.category,
+    event_date: data.eventDate,
+    end_date: data.endDate,
+    event_time: data.eventTime,
+    location: data.location,
+    description: data.description,
+    notes: data.notes,
+  };
+}
+
+async function saveEventForm() {
+  const data = readEventForm();
+  if (!data) return;
+
+  try {
+    if (modalMode === "create") {
+      if (useLocalStorage) {
+        await LocalStore.addEvent(currentUser.id, data);
+      } else {
+        const res = await fetch("/api/events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(toServerPayload(data)),
+          credentials: "include",
+        });
+        if (res.status === 401) {
+          showLoginScreen();
+          return;
+        }
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.detail || "儲存失敗");
+          return;
+        }
+      }
+    } else if (modalMode === "edit" && currentEventId) {
+      if (useLocalStorage) {
+        const ok = await LocalStore.updateEvent(currentUser.id, Number(currentEventId), data);
+        if (!ok) {
+          alert("儲存失敗");
+          return;
+        }
+      } else {
+        const res = await fetch(`/api/events/${currentEventId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(toServerPayload(data)),
+          credentials: "include",
+        });
+        if (res.status === 401) {
+          showLoginScreen();
+          return;
+        }
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.detail || "儲存失敗");
+          return;
+        }
+      }
+    }
+
+    closeModal();
+    calendar.refetchEvents();
+    if (data.eventDate) {
+      calendar.gotoDate(data.eventDate);
+    }
+  } catch {
+    alert("儲存失敗");
+  }
+}
+
 function closeModal() {
   document.getElementById("event-modal").classList.add("hidden");
   currentEventId = null;
+  modalMode = "view";
+  setModalView("view");
 }
 
 async function deleteCurrentEvent() {
@@ -524,9 +707,20 @@ async function deleteCurrentEvent() {
   }
 }
 
-function formatEventDate(start, end) {
+function formatEventDate(start, end, allDay = true) {
   const s = start.toLocaleDateString("zh-HK");
-  if (!end || start.toDateString() === end.toDateString()) return s;
+  if (!end) return s;
+
+  if (allDay) {
+    const endInclusive = new Date(end);
+    endInclusive.setDate(endInclusive.getDate() - 1);
+    if (start.toDateString() === endInclusive.toDateString()) return s;
+    return `${s} — ${endInclusive.toLocaleDateString("zh-HK")}`;
+  }
+
+  if (start.toDateString() === end.toDateString()) {
+    return `${s} ${start.toLocaleTimeString("zh-HK", { hour: "2-digit", minute: "2-digit" })}`;
+  }
   return `${s} — ${end.toLocaleDateString("zh-HK")}`;
 }
 

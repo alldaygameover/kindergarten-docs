@@ -296,6 +296,13 @@ body {
 }
 .section-header h2, .docs-section h2 { font-size: 1.1rem; }
 
+.calendar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
 .docs-count {
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -447,8 +454,38 @@ body {
   letter-spacing: 0.05em;
   margin-bottom: 0.15rem;
 }
-.modal-actions { display: flex; justify-content: stretch; }
-.modal-actions .btn { flex: 1; }
+.modal-actions { display: flex; justify-content: stretch; gap: 0.5rem; }
+.modal-actions-row .btn { flex: 1; }
+.modal-form { margin-top: 0.75rem; }
+.modal-form.hidden, #modal-view.hidden { display: none; }
+
+.form-field { margin-bottom: 0.85rem; }
+.form-field label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+  font-weight: 600;
+}
+.form-field input,
+.form-field select,
+.form-field textarea {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  min-height: 44px;
+}
+.form-field textarea { min-height: 72px; resize: vertical; }
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
 
 .fc { font-family: inherit; }
 .fc .fc-button-primary {
@@ -478,6 +515,28 @@ body {
     margin-top: 0.25rem;
   }
   .doc-card-actions .btn { flex: 1; }
+
+  .fc .fc-toolbar-title { font-size: 0.9rem !important; }
+  .fc .fc-button { padding: 0.3rem 0.45rem !important; font-size: 0.78rem !important; }
+  .fc .fc-col-header-cell-cushion { font-size: 0.72rem; padding: 2px 0 !important; }
+  .fc .fc-daygrid-day-number { font-size: 0.75rem; padding: 2px 4px !important; }
+  .fc .fc-daygrid-day-frame { min-height: 3.2rem; }
+  .fc .fc-daygrid-event {
+    font-size: 0.68rem;
+    padding: 1px 3px;
+    margin-bottom: 1px;
+    border-radius: 3px;
+    line-height: 1.2;
+  }
+  .fc .fc-daygrid-event .fc-event-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fc .fc-daygrid-day-events { margin-top: 1px; }
+  .fc .fc-more-link { font-size: 0.68rem; }
+  .calendar-header-actions { flex-wrap: wrap; justify-content: flex-end; }
+  #add-event-btn { font-size: 0.78rem; padding: 0.4rem 0.65rem; min-height: 36px; }
 }
 
 @media (min-width: 769px) {

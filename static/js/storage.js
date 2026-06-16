@@ -128,6 +128,76 @@ const LocalStore = (() => {
     return getAll(tx.objectStore("events"), "userId", userId);
   }
 
+  async function getEvent(userId, eventId) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction("events", "readonly").objectStore("events").get(eventId);
+      req.onsuccess = () => {
+        const event = req.result;
+        resolve(!event || event.userId !== userId ? null : event);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function addEvent(userId, data) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readwrite");
+      const req = tx.objectStore("events").add({
+        userId,
+        documentId: data.documentId ?? null,
+        title: data.title || "未命名活動",
+        description: data.description || null,
+        eventDate: data.eventDate,
+        endDate: data.endDate || null,
+        eventTime: data.eventTime || null,
+        location: data.location || null,
+        category: data.category || "other",
+        notes: data.notes || null,
+        filename: data.filename || "手動新增",
+      });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function updateEvent(userId, eventId, data) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readwrite");
+      const eventStore = tx.objectStore("events");
+
+      const getReq = eventStore.get(eventId);
+      getReq.onsuccess = () => {
+        const existing = getReq.result;
+        if (!existing || existing.userId !== userId) {
+          tx.abort();
+          tx._ok = false;
+          return;
+        }
+        eventStore.put({
+          ...existing,
+          title: data.title ?? existing.title,
+          description: data.description !== undefined ? data.description : existing.description,
+          eventDate: data.eventDate ?? existing.eventDate,
+          endDate: data.endDate !== undefined ? data.endDate : existing.endDate,
+          eventTime: data.eventTime !== undefined ? data.eventTime : existing.eventTime,
+          location: data.location !== undefined ? data.location : existing.location,
+          category: data.category ?? existing.category,
+          notes: data.notes !== undefined ? data.notes : existing.notes,
+        });
+        tx._ok = true;
+      };
+
+      getReq.onerror = () => reject(getReq.error);
+      tx.oncomplete = () => resolve(tx._ok === true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => resolve(false);
+    });
+  }
+
   function addDays(dateStr, days) {
     const d = new Date(`${dateStr}T12:00:00`);
     d.setDate(d.getDate() + days);
@@ -250,9 +320,13 @@ const LocalStore = (() => {
     getDocuments,
     getDocument,
     getEvents,
+    getEvent,
+    addEvent,
+    updateEvent,
     eventsToCalendar,
     deleteDocument,
     deleteEvent,
     openBlob,
+    addDays,
   };
 })();

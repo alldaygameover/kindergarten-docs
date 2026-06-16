@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -12,14 +12,17 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.ai_analyzer import analyze_document
 from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured
 from app.database import (
+    create_manual_event,
     delete_document,
     delete_event,
     get_document_by_id,
     get_documents_for_user,
+    get_event_by_id,
     get_events_for_user,
     init_db,
     save_document,
     save_events,
+    update_event,
 )
 from app.extractors import extract_content, get_file_type
 
@@ -179,6 +182,51 @@ async def api_events(user: dict = Depends(get_current_user)):
 @app.get("/api/documents")
 async def api_documents(user: dict = Depends(get_current_user)):
     return await get_documents_for_user(user["id"])
+
+
+@app.get("/api/events/{event_id}")
+async def api_get_event(event_id: int, user: dict = Depends(get_current_user)):
+    event = await get_event_by_id(event_id, user["id"])
+    if not event:
+        raise HTTPException(404, "找不到該活動")
+    return event
+
+
+@app.post("/api/events")
+async def api_create_event(
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    if not payload.get("title") or not payload.get("event_date"):
+        raise HTTPException(400, "請提供標題和日期")
+
+    end_date = payload.get("end_date")
+    if end_date and end_date < payload["event_date"]:
+        raise HTTPException(400, "結束日期不能早於開始日期")
+
+    event_id = await create_manual_event(
+        user["id"],
+        payload,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    return {"id": event_id, "ok": True}
+
+
+@app.put("/api/events/{event_id}")
+async def api_update_event(
+    event_id: int,
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    end_date = payload.get("end_date")
+    event_date = payload.get("event_date")
+    if end_date and event_date and end_date < event_date:
+        raise HTTPException(400, "結束日期不能早於開始日期")
+
+    updated = await update_event(event_id, user["id"], payload)
+    if not updated:
+        raise HTTPException(404, "找不到該活動")
+    return {"ok": True}
 
 
 @app.delete("/api/events/{event_id}")

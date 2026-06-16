@@ -74,7 +74,10 @@
     <section class="calendar-section tab-panel" data-panel="calendar">
       <div class="section-header">
         <h2>活動月曆</h2>
-        <button type="button" id="legend-toggle" class="legend-toggle" aria-expanded="false">圖例</button>
+        <div class="calendar-header-actions">
+          <button type="button" id="add-event-btn" class="btn btn-primary btn-sm">+ 新增活動</button>
+          <button type="button" id="legend-toggle" class="legend-toggle" aria-expanded="false">圖例</button>
+        </div>
       </div>
       <div id="legend" class="legend collapsed">
         <span class="legend-item" data-color="#e74c3c">假期</span>
@@ -103,10 +106,63 @@
     <div class="modal-content">
       <button class="modal-close" aria-label="關閉">&times;</button>
       <h3 id="modal-title"></h3>
-      <div id="modal-body" class="modal-body"></div>
-      <div class="modal-actions">
-        <button id="modal-delete" class="btn btn-danger">刪除此活動</button>
+
+      <div id="modal-view">
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions modal-actions-row">
+          <button type="button" id="modal-edit" class="btn btn-secondary">編輯</button>
+          <button type="button" id="modal-delete" class="btn btn-danger">刪除</button>
+        </div>
       </div>
+
+      <form id="modal-form" class="modal-form hidden">
+        <div class="form-field">
+          <label for="form-title">標題</label>
+          <input type="text" id="form-title" required maxlength="200" placeholder="活動名稱">
+        </div>
+        <div class="form-field">
+          <label for="form-category">類別</label>
+          <select id="form-category">
+            <option value="holiday">假期</option>
+            <option value="activity">活動</option>
+            <option value="payment">繳費</option>
+            <option value="uniform">校服</option>
+            <option value="meeting">會議</option>
+            <option value="excursion">外出</option>
+            <option value="other">其他</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label for="form-date">開始日期</label>
+            <input type="date" id="form-date" required>
+          </div>
+          <div class="form-field">
+            <label for="form-end-date">結束日期</label>
+            <input type="date" id="form-end-date">
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="form-time">時間（留空 = 全日）</label>
+          <input type="time" id="form-time">
+        </div>
+        <div class="form-field">
+          <label for="form-location">地點</label>
+          <input type="text" id="form-location" maxlength="200">
+        </div>
+        <div class="form-field">
+          <label for="form-description">說明</label>
+          <textarea id="form-description" rows="2" maxlength="500"></textarea>
+        </div>
+        <div class="form-field">
+          <label for="form-notes">注意事項</label>
+          <textarea id="form-notes" rows="2" maxlength="500"></textarea>
+        </div>
+        <div class="modal-actions modal-actions-row">
+          <button type="button" id="modal-cancel" class="btn btn-secondary">取消</button>
+          <button type="submit" id="modal-save" class="btn btn-primary">儲存</button>
+        </div>
+      </form>
     </div>
   </div>
 
