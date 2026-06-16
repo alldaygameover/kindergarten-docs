@@ -678,7 +678,6 @@ async function deleteDocument(docId, filename) {
 
 async function checkHealth() {
   const badge = document.getElementById("status-badge");
-  const privacyNote = document.getElementById("privacy-note");
 
   try {
     const res = await fetch("/api/health");
@@ -686,14 +685,6 @@ async function checkHealth() {
 
     useLocalStorage = data.storage_mode !== "server";
 
-    if (privacyNote) {
-      privacyNote.classList.toggle("hidden", !useLocalStorage);
-    }
-
-    if (data.redirect_uri) {
-      document.getElementById("redirect-uri-display").textContent = data.redirect_uri;
-      document.getElementById("oauth-setup-hint").classList.remove("hidden");
-    }
     if (!data.google_oauth_set) {
       badge.textContent = "請設定 Google OAuth";
       badge.className = "status-badge warn";
