@@ -335,6 +335,7 @@ body {
   margin-bottom: 0.5rem;
 }
 .review-actions .btn { width: 100%; min-height: 44px; }
+.review-actions .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .review-cancel {
   width: 100%;
   font-size: 0.85rem;

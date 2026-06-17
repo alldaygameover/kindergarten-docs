@@ -36,6 +36,7 @@ let useLocalFiles = true;
 let useServerEvents = true;
 let reviewSession = null;
 let reviewEditMode = false;
+let reviewSaving = false;
 let uploadQueue = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -707,6 +708,13 @@ function updateReviewCancelVisibility() {
   btn.classList.toggle("hidden", reviewSession.confirmedCount > 0);
 }
 
+function setReviewButtonsDisabled(disabled) {
+  ["review-edit-btn", "review-confirm-btn", "review-skip-btn", "review-cancel-btn"].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = disabled;
+  });
+}
+
 function setReviewEditMode(editing) {
   reviewEditMode = editing;
   document.getElementById("review-view").classList.toggle("hidden", editing);
@@ -744,7 +752,7 @@ function renderReviewEvent() {
 }
 
 function toggleReviewEdit() {
-  if (!reviewSession) return;
+  if (!reviewSession || reviewSaving) return;
   if (reviewEditMode) {
     const data = readEventFormFrom("review");
     if (!data) return;
@@ -764,33 +772,41 @@ function getCurrentReviewEventData() {
 }
 
 async function confirmReviewEvent() {
-  if (!reviewSession) return;
+  if (!reviewSession || reviewSaving) return;
 
+  const session = reviewSession;
   const data = getCurrentReviewEventData();
   if (!data) return;
 
-  reviewSession.events[reviewSession.index] = { ...reviewSession.events[reviewSession.index], ...data };
+  session.events[session.index] = { ...session.events[session.index], ...data };
 
+  reviewSaving = true;
+  setReviewButtonsDisabled(true);
   try {
-    await saveConfirmedReviewEvent(data);
-    reviewSession.confirmedCount += 1;
-    if (!reviewSession.firstConfirmedDate) {
-      reviewSession.firstConfirmedDate = data.eventDate;
+    await saveConfirmedReviewEvent(session, data);
+    if (!reviewSession || reviewSession !== session) return;
+    session.confirmedCount += 1;
+    if (!session.firstConfirmedDate) {
+      session.firstConfirmedDate = data.eventDate;
     }
     updateReviewCancelVisibility();
     advanceReviewEvent();
   } catch (err) {
     alert(err.message || "儲存失敗");
+  } finally {
+    reviewSaving = false;
+    if (reviewSession) setReviewButtonsDisabled(false);
   }
 }
 
 function skipReviewEvent() {
-  if (!reviewSession) return;
+  if (!reviewSession || reviewSaving) return;
   reviewSession.skippedCount += 1;
   advanceReviewEvent();
 }
 
 function advanceReviewEvent() {
+  if (!reviewSession) return;
   reviewSession.index += 1;
   if (reviewSession.index >= reviewSession.events.length) {
     finishReviewSession();
@@ -824,38 +840,37 @@ async function saveDocumentToServer(file, analysis) {
   return data.id;
 }
 
-async function saveConfirmedReviewEvent(eventData) {
-  if (reviewSession.docId === null) {
+async function saveConfirmedReviewEvent(session, eventData) {
+  if (!session) return;
+
+  if (session.docId === null) {
     if (useLocalFiles) {
       const { docId } = await LocalStore.saveDocumentOnly(
         currentUser.id,
-        reviewSession.file,
-        reviewSession.analysis,
+        session.file,
+        session.analysis,
       );
-      reviewSession.docId = docId;
+      session.docId = docId;
     } else {
-      reviewSession.docId = await saveDocumentToServer(
-        reviewSession.file,
-        reviewSession.analysis,
-      );
+      session.docId = await saveDocumentToServer(session.file, session.analysis);
     }
   }
 
   if (!useServerEvents) {
     await LocalStore.addEvent(currentUser.id, {
       ...eventData,
-      documentId: reviewSession.docId,
-      filename: reviewSession.file.name,
+      documentId: session.docId,
+      filename: session.file.name,
     });
     return;
   }
 
   const payload = {
     ...toServerPayload(eventData),
-    source_filename: reviewSession.file.name,
+    source_filename: session.file.name,
   };
-  if (!useLocalFiles && reviewSession.docId) {
-    payload.document_id = reviewSession.docId;
+  if (!useLocalFiles && session.docId) {
+    payload.document_id = session.docId;
   }
 
   const res = await fetch("/api/events", {
@@ -876,13 +891,13 @@ async function saveConfirmedReviewEvent(eventData) {
 
   const { id } = await res.json();
   if (useLocalFiles) {
-    reviewSession.confirmedIds.push(id);
-    await LocalStore.setDocumentServerEventIds(reviewSession.docId, reviewSession.confirmedIds);
+    session.confirmedIds.push(id);
+    await LocalStore.setDocumentServerEventIds(session.docId, session.confirmedIds);
     try {
       await LocalStore.addEvent(currentUser.id, {
         ...eventData,
-        documentId: reviewSession.docId,
-        filename: reviewSession.file.name,
+        documentId: session.docId,
+        filename: session.file.name,
       });
     } catch {
       // Local backup is optional
@@ -892,12 +907,15 @@ async function saveConfirmedReviewEvent(eventData) {
 
 async function finishReviewSession() {
   const session = reviewSession;
+  if (!session) return;
+
   const resultsEl = uploadQueue?.resultsEl;
   const filename = session.file.name;
   const { confirmedCount, skippedCount, firstConfirmedDate } = session;
 
   hideReviewPanel();
   reviewSession = null;
+  reviewSaving = false;
 
   if (confirmedCount > 0) {
     const storageNote = eventsStorage === "google_drive"
