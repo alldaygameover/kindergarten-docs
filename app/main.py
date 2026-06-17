@@ -40,6 +40,9 @@ def _read_app_version() -> str:
     env_version = os.getenv("APP_VERSION", "").strip()
     if env_version:
         return env_version
+    version_file = BASE_DIR / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text(encoding="utf-8").strip() or "dev"
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
