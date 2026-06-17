@@ -63,6 +63,68 @@
         <div class="spinner"></div>
         <p>AI 正在分析文件，請稍候...</p>
       </div>
+      <div id="review-panel" class="review-panel hidden">
+        <div class="review-header">
+          <p class="review-label">審核提取的活動</p>
+          <h3 id="review-filename"></h3>
+          <p id="review-summary" class="review-summary"></p>
+          <p id="review-progress" class="review-progress"></p>
+        </div>
+        <div id="review-view">
+          <div id="review-event-title" class="review-event-title"></div>
+          <div id="review-event-body" class="review-event-body"></div>
+        </div>
+        <form id="review-form" class="review-form hidden">
+          <div class="form-field">
+            <label for="review-title">標題</label>
+            <input type="text" id="review-title" required maxlength="200" placeholder="活動名稱">
+          </div>
+          <div class="form-field">
+            <label for="review-category">類別</label>
+            <select id="review-category">
+              <option value="holiday">假期</option>
+              <option value="activity">活動</option>
+              <option value="payment">繳費</option>
+              <option value="uniform">校服</option>
+              <option value="meeting">會議</option>
+              <option value="excursion">外出</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-field">
+              <label for="review-date">開始日期</label>
+              <input type="date" id="review-date" required>
+            </div>
+            <div class="form-field">
+              <label for="review-end-date">結束日期</label>
+              <input type="date" id="review-end-date">
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="review-time">時間（留空 = 全日）</label>
+            <input type="time" id="review-time">
+          </div>
+          <div class="form-field">
+            <label for="review-location">地點</label>
+            <input type="text" id="review-location" maxlength="200">
+          </div>
+          <div class="form-field">
+            <label for="review-description">說明</label>
+            <textarea id="review-description" rows="2" maxlength="500"></textarea>
+          </div>
+          <div class="form-field">
+            <label for="review-notes">注意事項</label>
+            <textarea id="review-notes" rows="2" maxlength="500"></textarea>
+          </div>
+        </form>
+        <div class="review-actions">
+          <button type="button" id="review-edit-btn" class="btn btn-secondary">編輯</button>
+          <button type="button" id="review-confirm-btn" class="btn btn-primary">加入月曆</button>
+          <button type="button" id="review-skip-btn" class="btn btn-ghost">略過</button>
+        </div>
+        <button type="button" id="review-cancel-btn" class="btn btn-ghost review-cancel">取消審核</button>
+      </div>
       <div id="upload-results" class="upload-results"></div>
     </section>
 

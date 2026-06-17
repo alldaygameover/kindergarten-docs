@@ -33,6 +33,9 @@ let currentUser = null;
 let storageMode = "hybrid";
 let useLocalFiles = true;
 let useServerEvents = true;
+let reviewSession = null;
+let reviewEditMode = false;
+let uploadQueue = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
   initModal();
@@ -540,30 +543,37 @@ function initUpload() {
 
   selectBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    fileInput.click();
+    if (!reviewSession) fileInput.click();
   });
 
-  dropZone.addEventListener("click", () => fileInput.click());
+  dropZone.addEventListener("click", () => {
+    if (!reviewSession) fileInput.click();
+  });
 
   dropZone.addEventListener("dragover", (e) => {
     e.preventDefault();
-    dropZone.classList.add("dragover");
+    if (!reviewSession) dropZone.classList.add("dragover");
   });
   dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
   dropZone.addEventListener("drop", (e) => {
     e.preventDefault();
     dropZone.classList.remove("dragover");
-    uploadFiles(e.dataTransfer.files);
+    if (!reviewSession) uploadFiles(e.dataTransfer.files);
   });
 
   fileInput.addEventListener("change", () => {
-    uploadFiles(fileInput.files);
+    if (!reviewSession) uploadFiles(fileInput.files);
     fileInput.value = "";
   });
+
+  document.getElementById("review-edit-btn")?.addEventListener("click", toggleReviewEdit);
+  document.getElementById("review-confirm-btn")?.addEventListener("click", confirmReviewEvent);
+  document.getElementById("review-skip-btn")?.addEventListener("click", skipReviewEvent);
+  document.getElementById("review-cancel-btn")?.addEventListener("click", cancelReviewSession);
 }
 
 async function uploadFiles(files) {
-  if (!files.length) return;
+  if (!files.length || reviewSession) return;
 
   const progress = document.getElementById("upload-progress");
   const results = document.getElementById("upload-results");
@@ -572,76 +582,304 @@ async function uploadFiles(files) {
 
   try {
     if (useLocalFiles) {
-      await uploadFilesLocal(files, results);
+      uploadQueue = { files: Array.from(files), resultsEl: results, index: 0, anyConfirmed: false };
+      await processNextUploadFile();
     } else {
       await uploadFilesServer(files, results);
-    }
-
-    refreshEventsUI();
-    loadDocuments();
-    if (isMobile()) {
-      switchTab("calendar");
+      refreshEventsUI();
+      loadDocuments();
+      if (isMobile()) switchTab("calendar");
+      document.getElementById("upload-progress").classList.add("hidden");
     }
   } catch (err) {
-    results.innerHTML = `<div class="result-item error">上傳失敗: ${err.message}</div>`;
-  } finally {
-    progress.classList.add("hidden");
+    results.innerHTML = `<div class="result-item error">上傳失敗: ${escapeHtml(err.message)}</div>`;
+    document.getElementById("upload-progress").classList.add("hidden");
   }
 }
 
-async function uploadFilesLocal(files, results) {
-  for (const file of files) {
+async function processNextUploadFile() {
+  if (!uploadQueue) return;
+
+  const progress = document.getElementById("upload-progress");
+  if (uploadQueue.index >= uploadQueue.files.length) {
+    progress.classList.add("hidden");
+    if (uploadQueue.anyConfirmed && isMobile()) {
+      switchTab("calendar");
+    }
+    uploadQueue = null;
+    return;
+  }
+
+  const file = uploadQueue.files[uploadQueue.index];
+  uploadQueue.index += 1;
+  progress.classList.remove("hidden");
+
+  try {
     const formData = new FormData();
     formData.append("file", file);
 
-    try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
-      const data = await res.json();
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+    const data = await res.json();
 
-      if (res.status === 401) {
-        showLoginScreen();
-        return;
-      }
-      if (!res.ok) {
-        results.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(data.detail || "分析失敗")}</div>`;
-        continue;
-      }
-
-      let eventCount = 0;
-      if (useServerEvents) {
-        const { docId } = await LocalStore.saveDocumentOnly(currentUser.id, file, data);
-        if (data.events?.length) {
-          const bulk = await postEventsBulk(data.events, file.name);
-          if (bulk?.ids?.length) {
-            await LocalStore.setDocumentServerEventIds(docId, bulk.ids);
-            eventCount = bulk.ids.length;
-          }
-        }
-      } else {
-        const saved = await LocalStore.saveDocumentWithEvents(currentUser.id, file, data);
-        eventCount = saved.eventCount;
-      }
-
-      const storageNote = useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。";
-      results.innerHTML += `<div class="result-item success">✓ ${escapeHtml(file.name)} — 找到 ${eventCount} 個活動，${storageNote}${escapeHtml(data.summary || "")}</div>`;
-
-      if (eventCount > 0 && data.events?.length) {
-        const firstDate = data.events
-          .map((e) => e.event_date)
-          .filter(Boolean)
-          .sort()[0];
-        if (firstDate && calendar) {
-          calendar.gotoDate(firstDate);
-        }
-      }
-    } catch (err) {
-      results.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(err.message)}</div>`;
+    if (res.status === 401) {
+      showLoginScreen();
+      progress.classList.add("hidden");
+      uploadQueue = null;
+      return;
     }
+    if (!res.ok) {
+      uploadQueue.resultsEl.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(data.detail || "分析失敗")}</div>`;
+      await processNextUploadFile();
+      return;
+    }
+
+    progress.classList.add("hidden");
+    const events = normalizeAnalysisEvents(data.events);
+    if (!events.length) {
+      uploadQueue.resultsEl.innerHTML += `<div class="result-item info">✓ ${escapeHtml(file.name)} — 未找到活動，文件未儲存。${escapeHtml(data.summary || "")}</div>`;
+      await processNextUploadFile();
+      return;
+    }
+
+    startReviewSession(file, data, events);
+  } catch (err) {
+    uploadQueue.resultsEl.innerHTML += `<div class="result-item error">✗ ${escapeHtml(file.name)} — ${escapeHtml(err.message)}</div>`;
+    await processNextUploadFile();
   }
+}
+
+function normalizeAnalysisEvents(events) {
+  return (events || [])
+    .map((event) => ({
+      title: event.title || "",
+      category: event.category || "other",
+      eventDate: event.event_date,
+      endDate: event.end_date && event.end_date !== "null" ? event.end_date : null,
+      eventTime: event.event_time && event.event_time !== "null" ? event.event_time : null,
+      location: event.location && event.location !== "null" ? event.location : null,
+      description: event.description && event.description !== "null" ? event.description : null,
+      notes: event.notes && event.notes !== "null" ? event.notes : null,
+    }))
+    .filter((event) => event.title && event.eventDate);
+}
+
+function startReviewSession(file, analysis, events) {
+  reviewSession = {
+    file,
+    analysis,
+    events,
+    index: 0,
+    docId: null,
+    confirmedIds: [],
+    confirmedCount: 0,
+    skippedCount: 0,
+    firstConfirmedDate: null,
+  };
+  reviewEditMode = false;
+  switchTab("upload");
+  showReviewPanel();
+  renderReviewEvent();
+}
+
+function showReviewPanel() {
+  const section = document.querySelector(".upload-section");
+  const panel = document.getElementById("review-panel");
+  section?.classList.add("review-active");
+  panel?.classList.remove("hidden");
+
+  document.getElementById("review-filename").textContent = reviewSession.file.name;
+  document.getElementById("review-summary").textContent = reviewSession.analysis.summary || "";
+  updateReviewCancelVisibility();
+}
+
+function hideReviewPanel() {
+  const section = document.querySelector(".upload-section");
+  const panel = document.getElementById("review-panel");
+  section?.classList.remove("review-active");
+  panel?.classList.add("hidden");
+  reviewEditMode = false;
+}
+
+function updateReviewCancelVisibility() {
+  const btn = document.getElementById("review-cancel-btn");
+  if (!btn || !reviewSession) return;
+  btn.classList.toggle("hidden", reviewSession.confirmedCount > 0);
+}
+
+function setReviewEditMode(editing) {
+  reviewEditMode = editing;
+  document.getElementById("review-view").classList.toggle("hidden", editing);
+  document.getElementById("review-form").classList.toggle("hidden", !editing);
+  document.getElementById("review-edit-btn").textContent = editing ? "完成編輯" : "編輯";
+}
+
+function renderReviewEvent() {
+  const event = reviewSession.events[reviewSession.index];
+  const total = reviewSession.events.length;
+  const current = reviewSession.index + 1;
+
+  document.getElementById("review-progress").textContent = `活動 ${current} / ${total}`;
+
+  const category = event.category || "other";
+  const color = CATEGORY_COLORS[category] || CATEGORY_COLORS.other;
+  const label = CATEGORY_LABELS[category] || category;
+
+  document.getElementById("review-event-title").innerHTML = `
+    <h4>${escapeHtml(event.title)}</h4>
+    <span class="review-event-badge" style="background:${color}">${escapeHtml(label)}</span>
+  `;
+  document.getElementById("review-event-body").innerHTML = renderEventViewFields({
+    category: event.category,
+    eventDate: event.eventDate,
+    endDate: event.endDate,
+    eventTime: event.eventTime,
+    location: event.location,
+    description: event.description,
+    notes: event.notes,
+  });
+
+  fillEventForm("review", event);
+  setReviewEditMode(false);
+}
+
+function toggleReviewEdit() {
+  if (!reviewSession) return;
+  if (reviewEditMode) {
+    const data = readEventFormFrom("review");
+    if (!data) return;
+    reviewSession.events[reviewSession.index] = { ...reviewSession.events[reviewSession.index], ...data };
+    renderReviewEvent();
+  } else {
+    fillEventForm("review", reviewSession.events[reviewSession.index]);
+    setReviewEditMode(true);
+  }
+}
+
+function getCurrentReviewEventData() {
+  if (reviewEditMode) {
+    return readEventFormFrom("review");
+  }
+  return { ...reviewSession.events[reviewSession.index] };
+}
+
+async function confirmReviewEvent() {
+  if (!reviewSession) return;
+
+  const data = getCurrentReviewEventData();
+  if (!data) return;
+
+  reviewSession.events[reviewSession.index] = { ...reviewSession.events[reviewSession.index], ...data };
+
+  try {
+    await saveConfirmedReviewEvent(data);
+    reviewSession.confirmedCount += 1;
+    if (!reviewSession.firstConfirmedDate) {
+      reviewSession.firstConfirmedDate = data.eventDate;
+    }
+    updateReviewCancelVisibility();
+    advanceReviewEvent();
+  } catch (err) {
+    alert(err.message || "儲存失敗");
+  }
+}
+
+function skipReviewEvent() {
+  if (!reviewSession) return;
+  reviewSession.skippedCount += 1;
+  advanceReviewEvent();
+}
+
+function advanceReviewEvent() {
+  reviewSession.index += 1;
+  if (reviewSession.index >= reviewSession.events.length) {
+    finishReviewSession();
+  } else {
+    renderReviewEvent();
+  }
+}
+
+async function saveConfirmedReviewEvent(eventData) {
+  if (reviewSession.docId === null) {
+    const { docId } = await LocalStore.saveDocumentOnly(
+      currentUser.id,
+      reviewSession.file,
+      reviewSession.analysis,
+    );
+    reviewSession.docId = docId;
+  }
+
+  if (!useServerEvents) {
+    await LocalStore.addEvent(currentUser.id, {
+      ...eventData,
+      documentId: reviewSession.docId,
+      filename: reviewSession.file.name,
+    });
+    return;
+  }
+
+  const res = await fetch("/api/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...toServerPayload(eventData),
+      source_filename: reviewSession.file.name,
+    }),
+    credentials: "include",
+  });
+
+  if (res.status === 401) {
+    showLoginScreen();
+    throw new Error("請重新登入");
+  }
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "活動同步失敗");
+  }
+
+  const { id } = await res.json();
+  reviewSession.confirmedIds.push(id);
+  await LocalStore.setDocumentServerEventIds(reviewSession.docId, reviewSession.confirmedIds);
+}
+
+async function finishReviewSession() {
+  const session = reviewSession;
+  const resultsEl = uploadQueue?.resultsEl;
+  const filename = session.file.name;
+  const { confirmedCount, skippedCount, firstConfirmedDate } = session;
+
+  hideReviewPanel();
+  reviewSession = null;
+
+  if (confirmedCount > 0) {
+    const storageNote = useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。";
+    resultsEl.innerHTML += `<div class="result-item success">✓ ${escapeHtml(filename)} — 已加入 ${confirmedCount} 個活動${skippedCount ? `，略過 ${skippedCount} 個` : ""}。${storageNote}</div>`;
+    refreshEventsUI();
+    loadDocuments();
+    if (uploadQueue) uploadQueue.anyConfirmed = true;
+    if (firstConfirmedDate && calendar) {
+      calendar.gotoDate(firstConfirmedDate);
+    }
+  } else {
+    resultsEl.innerHTML += `<div class="result-item info">✓ ${escapeHtml(filename)} — 已略過全部 ${skippedCount} 個活動，文件未儲存。</div>`;
+  }
+
+  await processNextUploadFile();
+}
+
+function cancelReviewSession() {
+  if (!reviewSession || reviewSession.confirmedCount > 0) return;
+  if (!confirm("確定要取消審核？文件和活動都不會儲存。")) return;
+
+  const filename = reviewSession.file.name;
+  const resultsEl = uploadQueue?.resultsEl;
+  hideReviewPanel();
+  reviewSession = null;
+  resultsEl.innerHTML += `<div class="result-item info">✓ ${escapeHtml(filename)} — 已取消審核，文件未儲存。</div>`;
+  processNextUploadFile();
 }
 
 async function uploadFilesServer(files, results) {
@@ -882,8 +1120,7 @@ async function showEventForm(mode, opts = {}) {
   form.reset();
 
   if (mode === "create") {
-    document.getElementById("form-date").value = opts.eventDate || "";
-    document.getElementById("form-category").value = "activity";
+    fillEventForm("form", { eventDate: opts.eventDate || "", category: "activity" });
   } else {
     const data = await loadEventData(opts.eventId);
     if (!data) {
@@ -891,14 +1128,7 @@ async function showEventForm(mode, opts = {}) {
       closeModal();
       return;
     }
-    document.getElementById("form-title").value = data.title || "";
-    document.getElementById("form-category").value = data.category || "other";
-    document.getElementById("form-date").value = data.eventDate || data.event_date || "";
-    document.getElementById("form-end-date").value = data.endDate || data.end_date || "";
-    document.getElementById("form-time").value = data.eventTime || data.event_time || "";
-    document.getElementById("form-location").value = data.location || "";
-    document.getElementById("form-description").value = data.description || "";
-    document.getElementById("form-notes").value = data.notes || "";
+    fillEventForm("form", data);
   }
 
   document.getElementById("event-modal").classList.remove("hidden");
@@ -917,11 +1147,25 @@ async function loadEventData(eventId) {
   return res.json();
 }
 
-function readEventForm() {
-  const title = document.getElementById("form-title").value.trim();
-  const eventDate = document.getElementById("form-date").value;
-  const endDate = document.getElementById("form-end-date").value;
-  const eventTime = document.getElementById("form-time").value;
+function fillEventForm(prefix, data) {
+  const timeValue = data.eventTime || data.event_time || "";
+  const parsedTime = LocalStore.parseTimeOnly(timeValue) || timeValue;
+
+  document.getElementById(`${prefix}-title`).value = data.title || "";
+  document.getElementById(`${prefix}-category`).value = data.category || "other";
+  document.getElementById(`${prefix}-date`).value = data.eventDate || data.event_date || "";
+  document.getElementById(`${prefix}-end-date`).value = data.endDate || data.end_date || "";
+  document.getElementById(`${prefix}-time`).value = parsedTime;
+  document.getElementById(`${prefix}-location`).value = data.location || "";
+  document.getElementById(`${prefix}-description`).value = data.description || "";
+  document.getElementById(`${prefix}-notes`).value = data.notes || "";
+}
+
+function readEventFormFrom(prefix) {
+  const title = document.getElementById(`${prefix}-title`).value.trim();
+  const eventDate = document.getElementById(`${prefix}-date`).value;
+  const endDate = document.getElementById(`${prefix}-end-date`).value;
+  const eventTime = document.getElementById(`${prefix}-time`).value;
 
   if (!title) {
     alert("請輸入標題");
@@ -938,14 +1182,18 @@ function readEventForm() {
 
   return {
     title,
-    category: document.getElementById("form-category").value,
+    category: document.getElementById(`${prefix}-category`).value,
     eventDate,
     endDate: endDate || null,
     eventTime: eventTime || null,
-    location: document.getElementById("form-location").value.trim() || null,
-    description: document.getElementById("form-description").value.trim() || null,
-    notes: document.getElementById("form-notes").value.trim() || null,
+    location: document.getElementById(`${prefix}-location`).value.trim() || null,
+    description: document.getElementById(`${prefix}-description`).value.trim() || null,
+    notes: document.getElementById(`${prefix}-notes`).value.trim() || null,
   };
+}
+
+function readEventForm() {
+  return readEventFormFrom("form");
 }
 
 function toServerPayload(data) {
