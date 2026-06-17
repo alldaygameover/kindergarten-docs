@@ -1,11 +1,12 @@
 import os
 import re
 import secrets
+import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -24,7 +25,6 @@ from app.database import (
     get_events_for_user,
     init_db,
     save_document,
-    save_events,
     update_event,
 )
 from app.extractors import extract_content, get_file_type
@@ -34,6 +34,24 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent.parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
+
+
+def _read_app_version() -> str:
+    env_version = os.getenv("APP_VERSION", "").strip()
+    if env_version:
+        return env_version
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=BASE_DIR,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "dev"
+
+
+APP_VERSION = _read_app_version()
 
 app = FastAPI(title="幼稚園文件月曆")
 app.add_middleware(
@@ -155,7 +173,15 @@ async def startup():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{APP_VERSION}}", APP_VERSION)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/api/me")
@@ -248,6 +274,45 @@ async def api_events(user: dict = Depends(get_current_user)):
 @app.get("/api/documents")
 async def api_documents(user: dict = Depends(get_current_user)):
     return await get_documents_for_user(user["id"])
+
+
+@app.post("/api/documents")
+async def api_save_document(
+    file: UploadFile = File(...),
+    summary: str = Form(""),
+    file_type: str = Form(""),
+    user: dict = Depends(get_current_user),
+):
+    """Save an uploaded document without creating calendar events."""
+    if not file.filename:
+        raise HTTPException(400, "缺少檔案")
+
+    resolved_type = file_type.strip() or get_file_type(file.filename)
+    if resolved_type == "unknown":
+        raise HTTPException(400, "不支援的檔案格式")
+
+    now = datetime.now(timezone.utc).isoformat()
+    upload_dir = user_upload_dir(user["id"])
+
+    try:
+        data = await file.read()
+        safe_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+        stored_path = Path("uploads") / str(user["id"]) / safe_name
+        (upload_dir / safe_name).write_bytes(data)
+
+        content = extract_content(file.filename, data)
+        doc_id = await save_document(
+            user_id=user["id"],
+            filename=file.filename,
+            file_type=resolved_type,
+            uploaded_at=now,
+            raw_text=content.get("text", ""),
+            summary=summary.strip(),
+            stored_path=str(stored_path).replace("\\", "/"),
+        )
+        return {"id": doc_id, "ok": True}
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/events/{event_id}")
@@ -478,14 +543,15 @@ async def api_upload(
 
             events = analysis.get("events", [])
             valid_events = [e for e in events if e.get("event_date")]
-            saved = await save_events(doc_id, valid_events, now)
 
             results.append({
                 "filename": file.filename,
                 "success": True,
                 "summary": analysis.get("summary", ""),
+                "document_id": doc_id,
                 "events_found": len(valid_events),
-                "events_saved": saved,
+                "events_saved": 0,
+                "note": "請使用審核流程逐個確認活動後再加入月曆。",
             })
         except Exception as exc:
             results.append({
@@ -514,4 +580,5 @@ async def health(request: Request):
         "storage_mode": mode,
         "files_storage": files_storage,
         "events_storage": events_storage,
+        "app_version": APP_VERSION,
     }

@@ -581,16 +581,8 @@ async function uploadFiles(files) {
   results.innerHTML = "";
 
   try {
-    if (useLocalFiles) {
-      uploadQueue = { files: Array.from(files), resultsEl: results, index: 0, anyConfirmed: false };
-      await processNextUploadFile();
-    } else {
-      await uploadFilesServer(files, results);
-      refreshEventsUI();
-      loadDocuments();
-      if (isMobile()) switchTab("calendar");
-      document.getElementById("upload-progress").classList.add("hidden");
-    }
+    uploadQueue = { files: Array.from(files), resultsEl: results, index: 0, anyConfirmed: false };
+    await processNextUploadFile();
   } catch (err) {
     results.innerHTML = `<div class="result-item error">上傳失敗: ${escapeHtml(err.message)}</div>`;
     document.getElementById("upload-progress").classList.add("hidden");
@@ -692,8 +684,13 @@ function showReviewPanel() {
   panel?.classList.remove("hidden");
 
   document.getElementById("review-filename").textContent = reviewSession.file.name;
-  document.getElementById("review-summary").textContent = reviewSession.analysis.summary || "";
+  const summary = reviewSession.analysis.summary || "";
+  const total = reviewSession.events.length;
+  document.getElementById("review-summary").textContent = summary
+    ? `${summary}（請審核每個活動，共 ${total} 個）`
+    : `請審核每個活動，共 ${total} 個`;
   updateReviewCancelVisibility();
+  panel?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function hideReviewPanel() {
@@ -802,14 +799,46 @@ function advanceReviewEvent() {
   }
 }
 
+async function saveDocumentToServer(file, analysis) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("summary", analysis.summary || "");
+  formData.append("file_type", analysis.file_type || "");
+
+  const res = await fetch("/api/documents", {
+    method: "POST",
+    body: formData,
+    credentials: "include",
+  });
+
+  if (res.status === 401) {
+    showLoginScreen();
+    throw new Error("請重新登入");
+  }
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "文件儲存失敗");
+  }
+
+  const data = await res.json();
+  return data.id;
+}
+
 async function saveConfirmedReviewEvent(eventData) {
   if (reviewSession.docId === null) {
-    const { docId } = await LocalStore.saveDocumentOnly(
-      currentUser.id,
-      reviewSession.file,
-      reviewSession.analysis,
-    );
-    reviewSession.docId = docId;
+    if (useLocalFiles) {
+      const { docId } = await LocalStore.saveDocumentOnly(
+        currentUser.id,
+        reviewSession.file,
+        reviewSession.analysis,
+      );
+      reviewSession.docId = docId;
+    } else {
+      reviewSession.docId = await saveDocumentToServer(
+        reviewSession.file,
+        reviewSession.analysis,
+      );
+    }
   }
 
   if (!useServerEvents) {
@@ -821,13 +850,18 @@ async function saveConfirmedReviewEvent(eventData) {
     return;
   }
 
+  const payload = {
+    ...toServerPayload(eventData),
+    source_filename: reviewSession.file.name,
+  };
+  if (!useLocalFiles && reviewSession.docId) {
+    payload.document_id = reviewSession.docId;
+  }
+
   const res = await fetch("/api/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...toServerPayload(eventData),
-      source_filename: reviewSession.file.name,
-    }),
+    body: JSON.stringify(payload),
     credentials: "include",
   });
 
@@ -841,8 +875,10 @@ async function saveConfirmedReviewEvent(eventData) {
   }
 
   const { id } = await res.json();
-  reviewSession.confirmedIds.push(id);
-  await LocalStore.setDocumentServerEventIds(reviewSession.docId, reviewSession.confirmedIds);
+  if (useLocalFiles) {
+    reviewSession.confirmedIds.push(id);
+    await LocalStore.setDocumentServerEventIds(reviewSession.docId, reviewSession.confirmedIds);
+  }
 }
 
 async function finishReviewSession() {
@@ -855,7 +891,9 @@ async function finishReviewSession() {
   reviewSession = null;
 
   if (confirmedCount > 0) {
-    const storageNote = useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。";
+    const storageNote = useLocalFiles
+      ? (useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。")
+      : "文件及活動已儲存。";
     resultsEl.innerHTML += `<div class="result-item success">✓ ${escapeHtml(filename)} — 已加入 ${confirmedCount} 個活動${skippedCount ? `，略過 ${skippedCount} 個` : ""}。${storageNote}</div>`;
     refreshEventsUI();
     loadDocuments();
@@ -880,33 +918,6 @@ function cancelReviewSession() {
   reviewSession = null;
   resultsEl.innerHTML += `<div class="result-item info">✓ ${escapeHtml(filename)} — 已取消審核，文件未儲存。</div>`;
   processNextUploadFile();
-}
-
-async function uploadFilesServer(files, results) {
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append("files", file);
-  }
-
-  const res = await fetch("/api/upload", { method: "POST", body: formData, credentials: "include" });
-  const data = await res.json();
-
-  if (res.status === 401) {
-    showLoginScreen();
-    return;
-  }
-  if (!res.ok) {
-    results.innerHTML = `<div class="result-item error">${data.detail || "上傳失敗"}</div>`;
-    return;
-  }
-
-  for (const r of data.results) {
-    const cls = r.success ? "success" : "error";
-    const msg = r.success
-      ? `✓ ${r.filename} — 找到 ${r.events_found} 個活動。${r.summary || ""}`
-      : `✗ ${r.filename} — ${r.error}`;
-    results.innerHTML += `<div class="result-item ${cls}">${msg}</div>`;
-  }
 }
 
 async function loadDocuments() {

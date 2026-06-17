@@ -201,9 +201,10 @@ async def create_manual_event(user_id: int, data: dict, created_at: str) -> int:
                 document_id, user_id, source_filename, title, description, event_date,
                 end_date, event_time, location, category, notes, created_at
             )
-            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                data.get("document_id"),
                 user_id,
                 data.get("source_filename", "手動新增"),
                 data.get("title", "未命名活動"),
