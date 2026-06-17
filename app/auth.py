@@ -20,7 +20,9 @@ def init_oauth() -> None:
         client_id=client_id,
         client_secret=client_secret,
         server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
+        client_kwargs={
+            "scope": "openid email profile https://www.googleapis.com/auth/drive.appdata",
+        },
     )
 
 
@@ -54,3 +56,9 @@ async def login_with_google(request: Request, token: dict) -> dict:
     )
     request.session["user_id"] = user["id"]
     return user
+
+
+def store_oauth_tokens(request: Request, token: dict) -> None:
+    from app.google_drive import store_google_tokens
+
+    store_google_tokens(request, token)

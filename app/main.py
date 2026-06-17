@@ -12,7 +12,17 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.ai_analyzer import analyze_document
-from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured
+from app.auth import get_current_user, init_oauth, login_with_google, oauth, oauth_configured, store_oauth_tokens
+from app.google_drive import (
+    create_event as drive_create_event,
+    create_events_bulk as drive_create_events_bulk,
+    delete_event as drive_delete_event,
+    delete_events_bulk as drive_delete_events_bulk,
+    get_event as drive_get_event,
+    list_events as drive_list_events,
+    update_event as drive_update_event,
+    use_google_drive_events,
+)
 from app.database import (
     create_events_bulk,
     create_manual_event,
@@ -216,7 +226,12 @@ async def auth_login(request: Request):
             "到 Google Cloud Console 建立 OAuth 憑證。",
         )
     redirect_uri = get_redirect_uri(request)
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    return await oauth.google.authorize_redirect(
+        request,
+        redirect_uri,
+        access_type="offline",
+        include_granted_scopes="true",
+    )
 
 
 @app.get("/auth/callback")
@@ -224,6 +239,7 @@ async def auth_callback(request: Request):
     try:
         token = await oauth.google.authorize_access_token(request)
         await login_with_google(request, token)
+        store_oauth_tokens(request, token)
     except Exception as exc:
         raise HTTPException(400, f"Google 登入失敗: {exc}") from exc
     return RedirectResponse("/")
@@ -259,13 +275,20 @@ def normalize_event_payload(event: dict) -> dict | None:
 
 
 @app.get("/api/events/list")
-async def api_events_list(user: dict = Depends(get_current_user)):
-    return await get_events_for_user(user["id"])
+async def api_events_list(request: Request, user: dict = Depends(get_current_user)):
+    del user
+    if use_google_drive_events():
+        return await drive_list_events(request)
+    return await get_events_for_user(request.session["user_id"])
 
 
 @app.get("/api/events")
-async def api_events(user: dict = Depends(get_current_user)):
-    events = await get_events_for_user(user["id"])
+async def api_events(request: Request, user: dict = Depends(get_current_user)):
+    del user
+    if use_google_drive_events():
+        events = await drive_list_events(request)
+    else:
+        events = await get_events_for_user(request.session["user_id"])
     calendar_events = []
     for e in events:
         calendar_event = build_calendar_event(e)
@@ -319,8 +342,16 @@ async def api_save_document(
 
 
 @app.get("/api/events/{event_id}")
-async def api_get_event(event_id: int, user: dict = Depends(get_current_user)):
-    event = await get_event_by_id(event_id, user["id"])
+async def api_get_event(event_id: str, request: Request, user: dict = Depends(get_current_user)):
+    del user
+    if use_google_drive_events():
+        event = await drive_get_event(request, event_id)
+    else:
+        try:
+            numeric_id = int(event_id)
+        except ValueError:
+            raise HTTPException(404, "找不到該活動") from None
+        event = await get_event_by_id(numeric_id, request.session["user_id"])
     if not event:
         raise HTTPException(404, "找不到該活動")
     return event
@@ -328,6 +359,7 @@ async def api_get_event(event_id: int, user: dict = Depends(get_current_user)):
 
 @app.post("/api/events/bulk")
 async def api_create_events_bulk(
+    request: Request,
     payload: dict = Body(...),
     user: dict = Depends(get_current_user),
 ):
@@ -345,29 +377,41 @@ async def api_create_events_bulk(
     if not normalized:
         raise HTTPException(400, "沒有有效的活動日期")
 
-    ids = await create_events_bulk(
-        user["id"],
-        normalized,
-        source_filename,
-        datetime.now(timezone.utc).isoformat(),
-    )
+    if use_google_drive_events():
+        ids = await drive_create_events_bulk(request, normalized, source_filename)
+    else:
+        ids = await create_events_bulk(
+            user["id"],
+            normalized,
+            source_filename,
+            datetime.now(timezone.utc).isoformat(),
+        )
     return {"ids": ids, "count": len(ids), "ok": True}
 
 
 @app.delete("/api/events/bulk")
 async def api_delete_events_bulk(
+    request: Request,
     payload: dict = Body(...),
     user: dict = Depends(get_current_user),
 ):
+    del user
     event_ids = payload.get("ids") or []
     if not isinstance(event_ids, list):
         raise HTTPException(400, "請提供活動 ID 列表")
-    deleted = await delete_events_by_ids(user["id"], [int(i) for i in event_ids])
+    if use_google_drive_events():
+        deleted = await drive_delete_events_bulk(request, [str(i) for i in event_ids])
+    else:
+        deleted = await delete_events_by_ids(
+            request.session["user_id"],
+            [int(i) for i in event_ids],
+        )
     return {"deleted": deleted, "ok": True}
 
 
 @app.post("/api/events")
 async def api_create_event(
+    request: Request,
     payload: dict = Body(...),
     user: dict = Depends(get_current_user),
 ):
@@ -378,17 +422,21 @@ async def api_create_event(
     if end_date and end_date < payload["event_date"]:
         raise HTTPException(400, "結束日期不能早於開始日期")
 
-    event_id = await create_manual_event(
-        user["id"],
-        payload,
-        datetime.now(timezone.utc).isoformat(),
-    )
+    if use_google_drive_events():
+        event_id = await drive_create_event(request, payload)
+    else:
+        event_id = await create_manual_event(
+            user["id"],
+            payload,
+            datetime.now(timezone.utc).isoformat(),
+        )
     return {"id": event_id, "ok": True}
 
 
 @app.put("/api/events/{event_id}")
 async def api_update_event(
-    event_id: int,
+    event_id: str,
+    request: Request,
     payload: dict = Body(...),
     user: dict = Depends(get_current_user),
 ):
@@ -397,15 +445,33 @@ async def api_update_event(
     if end_date and event_date and end_date < event_date:
         raise HTTPException(400, "結束日期不能早於開始日期")
 
-    updated = await update_event(event_id, user["id"], payload)
+    if use_google_drive_events():
+        updated = await drive_update_event(request, event_id, payload)
+    else:
+        try:
+            numeric_id = int(event_id)
+        except ValueError:
+            raise HTTPException(404, "找不到該活動") from None
+        updated = await update_event(numeric_id, user["id"], payload)
     if not updated:
         raise HTTPException(404, "找不到該活動")
     return {"ok": True}
 
 
 @app.delete("/api/events/{event_id}")
-async def api_delete_event(event_id: int, user: dict = Depends(get_current_user)):
-    deleted = await delete_event(event_id, user["id"])
+async def api_delete_event(
+    event_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    if use_google_drive_events():
+        deleted = await drive_delete_event(request, event_id)
+    else:
+        try:
+            numeric_id = int(event_id)
+        except ValueError:
+            raise HTTPException(404, "找不到該活動") from None
+        deleted = await delete_event(numeric_id, user["id"])
     if not deleted:
         raise HTTPException(404, "找不到該活動")
     return {"ok": True}
@@ -566,11 +632,20 @@ async def api_upload(
     return {"results": results}
 
 
+def resolve_storage_settings() -> tuple[str, str, str]:
+    mode = os.getenv("STORAGE_MODE", "google_drive").strip().lower()
+    if mode in ("google_drive", "google-drive"):
+        return mode, "local", "google_drive"
+    if mode == "hybrid":
+        return mode, "local", "server"
+    if mode == "server":
+        return mode, "server", "server"
+    return "local", "local", "local"
+
+
 @app.get("/api/health")
 async def health(request: Request):
-    mode = os.getenv("STORAGE_MODE", "hybrid")
-    files_storage = "local" if mode in ("local", "hybrid") else "server"
-    events_storage = "server" if mode in ("server", "hybrid") else "local"
+    mode, files_storage, events_storage = resolve_storage_settings()
     return {
         "status": "ok",
         "api_key_set": bool(os.getenv("OPENROUTER_API_KEY")),

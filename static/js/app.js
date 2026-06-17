@@ -30,7 +30,8 @@ let calendar = null;
 let currentEventId = null;
 let modalMode = "view";
 let currentUser = null;
-let storageMode = "hybrid";
+let storageMode = "google_drive";
+let eventsStorage = "google_drive";
 let useLocalFiles = true;
 let useServerEvents = true;
 let reviewSession = null;
@@ -184,11 +185,11 @@ async function deleteServerEventsBulk(ids) {
 
 async function migrateLocalEventsToServer() {
   if (!useServerEvents || !currentUser) return;
-  if (localStorage.getItem("eventsMigrated") === "true") return;
+  if (localStorage.getItem("eventsMigratedToDrive") === "true") return;
 
   const events = await LocalStore.getEvents(currentUser.id);
   if (!events.length) {
-    localStorage.setItem("eventsMigrated", "true");
+    localStorage.setItem("eventsMigratedToDrive", "true");
     return;
   }
 
@@ -214,8 +215,7 @@ async function migrateLocalEventsToServer() {
     await postEventsBulk(payload, "手機匯入");
   }
 
-  await LocalStore.clearAllEvents(currentUser.id);
-  localStorage.setItem("eventsMigrated", "true");
+  localStorage.setItem("eventsMigratedToDrive", "true");
 }
 
 function normalizeLocalEvent(event) {
@@ -878,6 +878,15 @@ async function saveConfirmedReviewEvent(eventData) {
   if (useLocalFiles) {
     reviewSession.confirmedIds.push(id);
     await LocalStore.setDocumentServerEventIds(reviewSession.docId, reviewSession.confirmedIds);
+    try {
+      await LocalStore.addEvent(currentUser.id, {
+        ...eventData,
+        documentId: reviewSession.docId,
+        filename: reviewSession.file.name,
+      });
+    } catch {
+      // Local backup is optional
+    }
   }
 }
 
@@ -891,9 +900,11 @@ async function finishReviewSession() {
   reviewSession = null;
 
   if (confirmedCount > 0) {
-    const storageNote = useLocalFiles
-      ? (useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。")
-      : "文件及活動已儲存。";
+    const storageNote = eventsStorage === "google_drive"
+      ? "文件已儲存至此手機，活動已存入 Google 帳戶。"
+      : useLocalFiles
+        ? (useServerEvents ? "文件已儲存至此手機，活動已同步。" : "已儲存至此手機。")
+        : "文件及活動已儲存。";
     resultsEl.innerHTML += `<div class="result-item success">✓ ${escapeHtml(filename)} — 已加入 ${confirmedCount} 個活動${skippedCount ? `，略過 ${skippedCount} 個` : ""}。${storageNote}</div>`;
     refreshEventsUI();
     loadDocuments();
@@ -1054,15 +1065,20 @@ async function checkHealth() {
     const res = await fetch("/api/health");
     const data = await res.json();
 
-    storageMode = data.storage_mode || "hybrid";
+    storageMode = data.storage_mode || "google_drive";
+    eventsStorage = data.events_storage || storageMode;
     useLocalFiles = data.files_storage ? data.files_storage === "local" : storageMode !== "server";
-    useServerEvents = data.events_storage ? data.events_storage === "server" : storageMode !== "local";
+    useServerEvents = data.events_storage
+      ? data.events_storage === "server" || data.events_storage === "google_drive"
+      : storageMode !== "local";
 
     if (!data.google_oauth_set) {
       badge.textContent = "請設定 Google OAuth";
       badge.className = "status-badge warn";
     } else if (data.api_key_set) {
-      if (storageMode === "hybrid") {
+      if (data.events_storage === "google_drive") {
+        badge.textContent = "Google 帳戶";
+      } else if (storageMode === "hybrid") {
         badge.textContent = "活動同步";
       } else if (useLocalFiles) {
         badge.textContent = "本機儲存";

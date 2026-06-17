@@ -21,11 +21,25 @@ Upload kindergarten notices (PDF, DOCX, images) — AI extracts dates and shows 
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `APP_URL` | `https://alldaygameover-kg-calendar.hf.space` |
 | `SESSION_SECRET` | Random secret string |
+| `STORAGE_MODE` | `google_drive` (recommended — events stored in user's Google account) |
 
-## Google OAuth
+## Google Cloud setup
 
-Add this redirect URI in Google Cloud Console:
+1. Enable **Google Drive API** in the same project as your OAuth credentials
+2. OAuth consent screen — add scope: `https://www.googleapis.com/auth/drive.appdata`
+3. Add redirect URI in Google Cloud Console:
 
 ```
 https://alldaygameover-kg-calendar.hf.space/auth/callback
 ```
+
+4. After deploy, users must **log in again** to grant Drive access
+
+### Storage modes
+
+| Mode | Files | Events |
+|------|-------|--------|
+| `google_drive` (default) | Phone (IndexedDB) | Google Drive hidden app data |
+| `hybrid` | Phone | HF server SQLite (legacy) |
+| `local` | Phone | Phone |
+| `server` | HF server | HF server |
